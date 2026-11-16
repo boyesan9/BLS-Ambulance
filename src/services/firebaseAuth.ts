@@ -130,6 +130,7 @@ export const getLoggedOutFlag = (): boolean => {
 export type FirebaseAuthFriendlyError = Error & {
   code?: string;
   unauthorizedDomain?: string;
+  pendingIntent?: RedirectLoginIntent | null;
 };
 
 export const formatFirebaseAuthError = (error: any): FirebaseAuthFriendlyError => {
@@ -219,9 +220,10 @@ export const initAuth = (
         if (pendingIntent?.redirectStarted && onAuthFailure) {
           const host = typeof window !== 'undefined' ? window.location.hostname : '';
           const storageBlockedErr = new Error(
-            `ไม่สามารถรับสถานะการล็อกอินกลับจาก Google Redirect ได้ (เบราว์เซอร์อาจบล็อก Third-Party Cookies ของ ${resolvedFirebaseConfig.authDomain} บนโดเมน "${host}") กรุณาเปิดรับคุกกี้ชั่วคราว หรือใช้การเข้าสู่ระบบด้วยอีเมลและรหัสผ่าน`
+            `ไม่สามารถรับสถานะการล็อกอินกลับจาก Google Redirect ได้ (เบราว์เซอร์อาจบล็อก Third-Party Cookies ของ ${resolvedFirebaseConfig.authDomain} บนโดเมน "${host}") กรุณากด "ลองเข้าสู่ระบบด้วย Popup" ด้านล่าง หรือเปิดรับคุกกี้ชั่วคราว`
           ) as FirebaseAuthFriendlyError;
           storageBlockedErr.code = 'auth/redirect-state-lost';
+          storageBlockedErr.pendingIntent = pendingIntent;
           onAuthFailure(storageBlockedErr);
           return;
         }
@@ -241,12 +243,13 @@ export const isEmbeddedInIframe = (): boolean => {
 
 export const googleSignIn = async (options?: {
   intent?: Omit<RedirectLoginIntent, 'timestamp'>;
+  forcePopup?: boolean;
 }): Promise<GoogleSignInResult | null> => {
   try {
     const inIframe = isEmbeddedInIframe();
 
-    // บนเบราว์เซอร์ปกติ (เช่น bls-ambulance.vercel.app) สั่งเปลี่ยนหน้าไปยังหน้าล็อกอินของ Google ทันทีด้วย signInWithRedirect (เลี่ยงปัญหาป๊อปอัพ)
-    if (!inIframe) {
+    // บนเบราว์เซอร์ปกติ (เช่น bls-ambulance.vercel.app) สั่งเปลี่ยนหน้าไปยังหน้าล็อกอินของ Google ทันทีด้วย signInWithRedirect (เลี่ยงปัญหาป๊อปอัพ) ยกเว้นเมื่อสั่ง forcePopup
+    if (!inIframe && !options?.forcePopup) {
       saveRedirectIntent({
         ...(options?.intent || { type: 'login_view' }),
         redirectStarted: true,

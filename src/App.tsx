@@ -154,6 +154,7 @@ export default function App() {
     linkUrl?: string;
     linkText?: string;
     persistent?: boolean;
+    retryPopupIntent?: RedirectLoginIntent | null;
   } | null>(null);
 
   // Initialize Firebase Auth listener (including getRedirectResult recovery)
@@ -223,6 +224,7 @@ export default function App() {
             title: 'การเข้าสู่ระบบ Google ไม่สำเร็จ',
             message: err.message || 'ไม่สามารถดำเนินการเข้าสู่ระบบผ่าน Google Redirect ได้',
             persistent: Boolean(err.unauthorizedDomain || err.code === 'auth/redirect-state-lost'),
+            retryPopupIntent: err.code === 'auth/redirect-state-lost' ? err.pendingIntent || { type: 'login_view', timestamp: Date.now() } : null,
           });
         } else {
           setGoogleUser(null);
@@ -907,12 +909,13 @@ export default function App() {
 
   // Google Login Trigger
   const handleGoogleLogin = async (
-    intent?: Omit<RedirectLoginIntent, 'timestamp'>
+    intent?: Omit<RedirectLoginIntent, 'timestamp'>,
+    forcePopup = false
   ): Promise<'success' | 'redirected' | false> => {
     setIsGoogleLoading(true);
     let wasRedirected = false;
     try {
-      const res = await googleSignIn({ intent });
+      const res = await googleSignIn({ intent, forcePopup });
       if (res?.redirected) {
         wasRedirected = true;
         return 'redirected';
@@ -929,12 +932,61 @@ export default function App() {
         type: 'error',
         title: 'การเชื่อมต่อ Google ไม่สำเร็จ',
         message: err.message || 'โปรดตรวจสอบการอนุญาตสิทธิ์',
+        persistent: Boolean(err?.unauthorizedDomain || err?.code === 'auth/redirect-state-lost'),
       });
       throw err;
     } finally {
       if (!wasRedirected) {
         setIsGoogleLoading(false);
       }
+    }
+  };
+
+  const handleRetryPopupLogin = async (intent?: RedirectLoginIntent | null) => {
+    setToastNotification(null);
+    try {
+      const res = await handleGoogleLogin(
+        intent ? { type: intent.type, role: intent.role, targetUser: intent.targetUser } : { type: 'login_view' },
+        true
+      );
+      if (res === 'success') {
+        const signedInUser = auth.currentUser;
+        if (intent?.type === 'admin_auth' && signedInUser) {
+          if (!isAuthorizedAdminEmail(signedInUser.email)) {
+            setToastNotification({
+              type: 'error',
+              title: 'ไม่มีสิทธิ์ผู้ดูแลระบบ',
+              message: 'บัญชี Google นี้ไม่มีสิทธิ์เข้าใช้งานส่วนผู้ดูแลระบบ',
+            });
+            return;
+          }
+          setLoggedOutFlag(false);
+          const activeUser = getCurrentUser();
+          const targetProfile: UserProfile = intent.targetUser
+            ? {
+                ...intent.targetUser,
+                email: intent.targetUser.email || signedInUser.email || '',
+                role: 'admin',
+              }
+            : {
+                ...(activeUser || DEMO_USERS.admin),
+                name: activeUser?.name || signedInUser.displayName || 'ผู้ดูแลระบบ (Admin)',
+                email: activeUser?.email || signedInUser.email || '',
+                role: 'admin',
+              };
+          await handleLogin(targetProfile);
+          setCurrentView('dashboard');
+          setToastNotification({
+            type: 'success',
+            title: 'เข้าสู่ระบบผู้ดูแลสำเร็จ',
+            message: 'ยืนยันสิทธิ์ผู้ดูแลระบบผ่านหน้าต่าง Popup และซิงค์ข้อมูลเรียบร้อยแล้ว',
+          });
+        } else if (intent?.type === 'sheets_modal') {
+          setGoogleSheetsModalOpen(true);
+        }
+      }
+    } catch (_) {
+      // handleGoogleLogin already sets error toast
     }
   };
 
@@ -2315,6 +2367,16 @@ export default function App() {
                         <span>คัดลอกโดเมน ({window.location.hostname})</span>
                       </button>
                     )}
+                  {toastNotification.retryPopupIntent && (
+                    <button
+                      type="button"
+                      disabled={isGoogleLoading}
+                      onClick={() => handleRetryPopupLogin(toastNotification.retryPopupIntent)}
+                      className="mt-2 inline-flex items-center gap-1 rounded-lg bg-sky-600 px-3 py-1.5 text-[11px] font-bold text-white shadow-sm hover:bg-sky-500 disabled:opacity-50"
+                    >
+                      <span>{isGoogleLoading ? 'กำลังเปิดหน้าต่าง...' : 'ลองเข้าสู่ระบบด้วย Popup แทน'}</span>
+                    </button>
+                  )}
                 </div>
                 <button
                   onClick={() => setToastNotification(null)}
@@ -2568,6 +2630,16 @@ export default function App() {
                       <span>คัดลอกโดเมน ({window.location.hostname})</span>
                     </button>
                   )}
+                {toastNotification.retryPopupIntent && (
+                  <button
+                    type="button"
+                    disabled={isGoogleLoading}
+                    onClick={() => handleRetryPopupLogin(toastNotification.retryPopupIntent)}
+                    className="mt-2 inline-flex items-center gap-1 rounded-lg bg-sky-600 px-3 py-1.5 text-[11px] font-bold text-white shadow-sm hover:bg-sky-500 disabled:opacity-50"
+                  >
+                    <span>{isGoogleLoading ? 'กำลังเปิดหน้าต่าง...' : 'ลองเข้าสู่ระบบด้วย Popup แทน'}</span>
+                  </button>
+                )}
                 {toastNotification.linkUrl && (
                   <a
                     href={toastNotification.linkUrl}
