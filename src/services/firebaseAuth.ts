@@ -18,6 +18,7 @@ export const auth = getAuth(app);
 const provider = new GoogleAuthProvider();
 provider.addScope('https://www.googleapis.com/auth/spreadsheets');
 provider.addScope('https://www.googleapis.com/auth/drive.file');
+provider.setCustomParameters({ prompt: 'select_account' });
 
 const TOKEN_STORAGE_KEY = 'bls_google_access_token_v1';
 const TOKEN_TIME_KEY = 'bls_google_token_time_v1';
@@ -28,6 +29,7 @@ export interface RedirectLoginIntent {
   type: 'login_view' | 'admin_auth' | 'sheets_modal' | 'sync';
   role?: UserRole;
   targetUser?: UserProfile;
+  redirectStarted?: boolean;
   timestamp: number;
 }
 
@@ -72,14 +74,17 @@ export const saveRedirectIntent = (intent: Omit<RedirectLoginIntent, 'timestamp'
       ...intent,
       timestamp: Date.now(),
     };
-    sessionStorage.setItem(REDIRECT_INTENT_KEY, JSON.stringify(payload));
+    const serialized = JSON.stringify(payload);
+    sessionStorage.setItem(REDIRECT_INTENT_KEY, serialized);
+    localStorage.setItem(REDIRECT_INTENT_KEY, serialized);
   } catch (_) {}
 };
 
 export const consumeRedirectIntent = (): RedirectLoginIntent | null => {
   try {
-    const raw = sessionStorage.getItem(REDIRECT_INTENT_KEY);
+    const raw = sessionStorage.getItem(REDIRECT_INTENT_KEY) || localStorage.getItem(REDIRECT_INTENT_KEY);
     sessionStorage.removeItem(REDIRECT_INTENT_KEY);
+    localStorage.removeItem(REDIRECT_INTENT_KEY);
     if (!raw) return null;
     const parsed: RedirectLoginIntent = JSON.parse(raw);
     if (Date.now() - parsed.timestamp > 10 * 60 * 1000) {
@@ -174,8 +179,11 @@ export const initAuth = (
   return onAuthStateChanged(auth, async (user: User | null) => {
     const redirectRes = await redirectResultPromise;
     const redirectErr = consumeRedirectError();
-    if (redirectErr && onAuthFailure) {
-      onAuthFailure(redirectErr);
+    if (redirectErr) {
+      consumeRedirectIntent();
+      if (onAuthFailure) {
+        onAuthFailure(redirectErr);
+      }
     }
 
     if (user) {
@@ -189,6 +197,18 @@ export const initAuth = (
       if (onAuthSuccess) onAuthSuccess(user, token, isFromRedirect);
     } else {
       clearToken();
+      if (!redirectErr) {
+        const pendingIntent = consumeRedirectIntent();
+        if (pendingIntent?.redirectStarted && onAuthFailure) {
+          const host = typeof window !== 'undefined' ? window.location.hostname : '';
+          const storageBlockedErr = new Error(
+            `ไม่สามารถรับสถานะการล็อกอินกลับจาก Google Redirect ได้ (เบราว์เซอร์อาจบล็อก Third-Party Cookies ของ ${firebaseConfig.authDomain} บนโดเมน "${host}") กรุณาเปิดรับคุกกี้ชั่วคราว หรือใช้การเข้าสู่ระบบด้วยอีเมลและรหัสผ่าน`
+          ) as FirebaseAuthFriendlyError;
+          storageBlockedErr.code = 'auth/redirect-state-lost';
+          onAuthFailure(storageBlockedErr);
+          return;
+        }
+      }
       if (onAuthFailure) onAuthFailure(null);
     }
   });
@@ -206,12 +226,23 @@ export const googleSignIn = async (options?: {
   intent?: Omit<RedirectLoginIntent, 'timestamp'>;
 }): Promise<GoogleSignInResult | null> => {
   try {
+    const inIframe = isEmbeddedInIframe();
+
+    // บนเบราว์เซอร์ปกติ (เช่น bls-ambulance.vercel.app) สั่งเปลี่ยนหน้าไปยังหน้าล็อกอินของ Google ทันทีด้วย signInWithRedirect (เลี่ยงปัญหาป๊อปอัพ)
+    if (!inIframe) {
+      saveRedirectIntent({
+        ...(options?.intent || { type: 'login_view' }),
+        redirectStarted: true,
+      });
+      await signInWithRedirect(auth, provider);
+      return { redirected: true };
+    }
+
+    // กรณีเปิดใช้งานภายใน iframe (เช่น AI Studio Preview) ใช้ signInWithPopup เนื่องจากหน้า Google ปฏิเสธการโหลดแบบ Redirect ใน iframe
     if (options?.intent) {
       saveRedirectIntent(options.intent);
     }
 
-    // ใช้ signInWithPopup เป็นหลักทั้งบน AI Studio และ Vercel (ร่วมกับ COOP same-origin-allow-popups ใน vercel.json)
-    // เพื่อหลีกเลี่ยงปัญหา Third-Party Storage Partitioning ที่ทำให้ getRedirectResult คืนค่า null เมื่อ authDomain เป็น firebaseapp.com
     const result = await signInWithPopup(auth, provider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
@@ -222,18 +253,6 @@ export const googleSignIn = async (options?: {
     consumeRedirectIntent();
     return { user: result.user, accessToken: credential.accessToken, redirected: false };
   } catch (error: any) {
-    // หากถูกบล็อกป๊อปอัพบนเบราว์เซอร์ปกติ (ไม่ได้อยู่ใน iframe) ให้สลับไปใช้ signInWithRedirect อัตโนมัติ
-    if (error?.code === 'auth/popup-blocked' && !isEmbeddedInIframe()) {
-      try {
-        await signInWithRedirect(auth, provider);
-        return { redirected: true };
-      } catch (redirectErr: any) {
-        consumeRedirectIntent();
-        console.warn('Google Sign-in redirect fallback warning:', redirectErr?.code || redirectErr?.message);
-        throw formatFirebaseAuthError(redirectErr);
-      }
-    }
-
     consumeRedirectIntent();
     console.warn('Google Sign-in warning:', error?.code || error?.message);
     throw formatFirebaseAuthError(error);
