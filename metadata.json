@@ -1,0 +1,10 @@
+{
+  "name": " BLS Ambulance",
+  "description": "ระบบตรวจรถยนต์ส่วนกลางพร้อมอุปกรณ์",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
