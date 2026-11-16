@@ -106,7 +106,7 @@ import {
   toDisplayableDriveImageUrl,
 } from './services/storage';
 import { User } from 'firebase/auth';
-import { CheckCircle2, AlertCircle, ExternalLink } from 'lucide-react';
+import { CheckCircle2, AlertCircle, ExternalLink, Copy } from 'lucide-react';
 
 export default function App() {
   const [currentUser, setCurrentUserState] = useState<UserProfile | null>(() => getCurrentUser());
@@ -153,6 +153,7 @@ export default function App() {
     message: string;
     linkUrl?: string;
     linkText?: string;
+    persistent?: boolean;
   } | null>(null);
 
   // Initialize Firebase Auth listener (including getRedirectResult recovery)
@@ -221,6 +222,7 @@ export default function App() {
             type: 'error',
             title: 'การเข้าสู่ระบบ Google ไม่สำเร็จ',
             message: err.message || 'ไม่สามารถดำเนินการเข้าสู่ระบบผ่าน Google Redirect ได้',
+            persistent: Boolean(err.unauthorizedDomain || err.code === 'auth/redirect-state-lost'),
           });
         } else {
           setGoogleUser(null);
@@ -247,7 +249,7 @@ export default function App() {
 
   // Toast Auto-dismiss
   useEffect(() => {
-    if (toastNotification) {
+    if (toastNotification && !toastNotification.persistent) {
       const timer = setTimeout(() => {
         setToastNotification(null);
       }, 7000);
@@ -2299,7 +2301,20 @@ export default function App() {
                 )}
                 <div className="flex-1">
                   <h5 className="text-xs font-bold">{toastNotification.title}</h5>
-                  <p className="mt-0.5 text-xs opacity-90">{toastNotification.message}</p>
+                  <p className="mt-0.5 text-xs opacity-90 leading-relaxed">{toastNotification.message}</p>
+                  {toastNotification.message.includes('Authorized domains') &&
+                    typeof window !== 'undefined' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(window.location.hostname);
+                        }}
+                        className="mt-2 inline-flex items-center gap-1 rounded-lg border border-red-300 bg-white px-2.5 py-1 text-[11px] font-bold text-red-700 hover:bg-red-100 dark:border-red-800 dark:bg-red-900/40 dark:text-red-200"
+                      >
+                        <Copy className="h-3 w-3" />
+                        <span>คัดลอกโดเมน ({window.location.hostname})</span>
+                      </button>
+                    )}
                 </div>
                 <button
                   onClick={() => setToastNotification(null)}
@@ -2539,7 +2554,20 @@ export default function App() {
               )}
               <div className="flex-1">
                 <h5 className="text-xs font-bold">{toastNotification.title}</h5>
-                <p className="mt-0.5 text-xs opacity-90">{toastNotification.message}</p>
+                <p className="mt-0.5 text-xs opacity-90 leading-relaxed">{toastNotification.message}</p>
+                {toastNotification.message.includes('Authorized domains') &&
+                  typeof window !== 'undefined' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(window.location.hostname);
+                      }}
+                      className="mt-2 inline-flex items-center gap-1 rounded-lg border border-red-300 bg-white px-2.5 py-1 text-[11px] font-bold text-red-700 hover:bg-red-100 dark:border-red-800 dark:bg-red-900/40 dark:text-red-200"
+                    >
+                      <Copy className="h-3 w-3" />
+                      <span>คัดลอกโดเมน ({window.location.hostname})</span>
+                    </button>
+                  )}
                 {toastNotification.linkUrl && (
                   <a
                     href={toastNotification.linkUrl}

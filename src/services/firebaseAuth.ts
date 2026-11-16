@@ -12,7 +12,20 @@ import {
 import firebaseConfig from '../../firebase-applet-config.json';
 import { UserProfile, UserRole } from '../types';
 
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+const resolvedFirebaseConfig = {
+  ...firebaseConfig,
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || firebaseConfig.apiKey,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfig.authDomain,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || firebaseConfig.projectId,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || firebaseConfig.storageBucket,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseConfig.messagingSenderId,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || firebaseConfig.appId,
+};
+
+export const activeFirebaseProjectId = resolvedFirebaseConfig.projectId;
+export const activeFirebaseAuthDomain = resolvedFirebaseConfig.authDomain;
+
+const app = getApps().length > 0 ? getApp() : initializeApp(resolvedFirebaseConfig);
 export const auth = getAuth(app);
 
 const provider = new GoogleAuthProvider();
@@ -125,13 +138,13 @@ export const formatFirebaseAuthError = (error: any): FirebaseAuthFriendlyError =
   let message = error?.message || 'ไม่สามารถเข้าสู่ระบบด้วย Google ได้';
 
   if (code === 'auth/unauthorized-domain') {
-    message = `โดเมน "${host}" ยังไม่ได้รับอนุญาตใน Firebase (${firebaseConfig.projectId}) กรุณาเพิ่มโดเมนนี้ใน Firebase Console > Authentication > Settings > Authorized domains (หรือใช้รหัสความปลอดภัย Admin ชั่วคราว)`;
+    message = `โดเมน "${host}" ยังไม่ได้รับอนุญาตใน Firebase Project "${resolvedFirebaseConfig.projectId}" กรุณาเพิ่ม "${host}" (ไม่ต้องมี https://) ใน Firebase Console ของโปรเจกต์ "${resolvedFirebaseConfig.projectId}" > Authentication > Settings > Authorized domains (หรือใช้อีเมลและรหัสผ่าน Admin แทนได้ทันที)`;
   } else if (code === 'auth/popup-blocked') {
     message = 'เบราว์เซอร์บล็อกหน้าต่างป๊อปอัพ กรุณาอนุญาตป๊อปอัพสำหรับเว็บไซต์นี้ หรือเปิดใช้งานแบบเต็มหน้าจอ';
   } else if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
     message = 'การเข้าสู่ระบบด้วย Google ถูกปิดหรือยกเลิกก่อนเสร็จสมบูรณ์';
   } else if (code === 'auth/operation-not-allowed') {
-    message = `ยังไม่ได้เปิดใช้งาน Google Sign-in ใน Firebase Console (${firebaseConfig.projectId}) > Authentication > Sign-in method`;
+    message = `ยังไม่ได้เปิดใช้งาน Google Sign-in ใน Firebase Console (${resolvedFirebaseConfig.projectId}) > Authentication > Sign-in method`;
   } else if (code === 'auth/network-request-failed') {
     message = 'ไม่สามารถเชื่อมต่อบริการยืนยันตัวตน Google ได้ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต';
   }
@@ -196,13 +209,17 @@ export const initAuth = (
       const token = redirectRes?.accessToken || (await getAccessToken()) || '';
       if (onAuthSuccess) onAuthSuccess(user, token, isFromRedirect);
     } else {
+      // หาก getRedirectResult เพิ่งสำเร็จและกำลังอัปเดต auth state เป็น user อย่าเพิ่งล้าง token/intent ในรอบ null แรก
+      if (redirectRes?.user) {
+        return;
+      }
       clearToken();
       if (!redirectErr) {
         const pendingIntent = consumeRedirectIntent();
         if (pendingIntent?.redirectStarted && onAuthFailure) {
           const host = typeof window !== 'undefined' ? window.location.hostname : '';
           const storageBlockedErr = new Error(
-            `ไม่สามารถรับสถานะการล็อกอินกลับจาก Google Redirect ได้ (เบราว์เซอร์อาจบล็อก Third-Party Cookies ของ ${firebaseConfig.authDomain} บนโดเมน "${host}") กรุณาเปิดรับคุกกี้ชั่วคราว หรือใช้การเข้าสู่ระบบด้วยอีเมลและรหัสผ่าน`
+            `ไม่สามารถรับสถานะการล็อกอินกลับจาก Google Redirect ได้ (เบราว์เซอร์อาจบล็อก Third-Party Cookies ของ ${resolvedFirebaseConfig.authDomain} บนโดเมน "${host}") กรุณาเปิดรับคุกกี้ชั่วคราว หรือใช้การเข้าสู่ระบบด้วยอีเมลและรหัสผ่าน`
           ) as FirebaseAuthFriendlyError;
           storageBlockedErr.code = 'auth/redirect-state-lost';
           onAuthFailure(storageBlockedErr);
