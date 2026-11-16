@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User } from 'firebase/auth';
 import { Shield, Lock, Key, Mail, Eye, EyeOff, X, CheckCircle2, AlertCircle, Copy, Check } from 'lucide-react';
-import { RedirectLoginIntent } from '../services/firebaseAuth';
+import { RedirectLoginIntent, auth } from '../services/firebaseAuth';
 import { UserProfile } from '../types';
 
 const AUTHORIZED_ADMIN_EMAILS = [
@@ -118,12 +118,17 @@ export const AdminAuthModal: React.FC<AdminAuthModalProps> = ({
         return;
       }
       if (res !== false) {
+        const signedInEmail = auth.currentUser?.email;
+        if (mode !== 'switch_role' && signedInEmail && !isAuthorizedAdminEmail(signedInEmail)) {
+          setErrorMessage('บัญชี Google นี้ไม่มีสิทธิ์เข้าใช้งานส่วนผู้ดูแลระบบ');
+          return;
+        }
         onSuccess();
       } else {
         setErrorMessage('การเข้าสู่ระบบด้วย Google ถูกยกเลิกหรือไม่สำเร็จ กรุณาลองใหม่หรือใช้อีเมลและรหัสผ่าน');
       }
     } catch (err: any) {
-      setErrorMessage(err.message || 'ไม่สามารถเข้าสู่ระบบด้วย Google ได้');
+      setErrorMessage(err?.message || 'ไม่สามารถเข้าสู่ระบบด้วย Google ได้');
     }
   };
 

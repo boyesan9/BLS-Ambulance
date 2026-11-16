@@ -27,6 +27,8 @@ import {
   Fuel,
   PackageCheck,
   PackagePlus,
+  Copy,
+  Check,
 } from 'lucide-react';
 import {
   createInspectionSpreadsheet,
@@ -111,6 +113,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
   const [isPullingData, setIsPullingData] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [copiedDomain, setCopiedDomain] = useState(false);
 
   if (!isOpen || currentUser.role !== 'admin') return null;
 
@@ -621,18 +624,40 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
           {/* Status Message */}
           {statusMessage && (
             <div
-              className={`flex items-center gap-2 rounded-xl p-3 text-xs font-medium ${
+              className={`flex items-start gap-2 rounded-xl p-3 text-xs font-medium ${
                 statusMessage.type === 'success'
                   ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
                   : 'bg-red-50 text-red-800 dark:bg-red-950/40 dark:text-red-300'
               }`}
             >
               {statusMessage.type === 'success' ? (
-                <CheckCircle2 className="h-4 w-4 shrink-0" />
+                <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
               ) : (
-                <AlertCircle className="h-4 w-4 shrink-0" />
+                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
               )}
-              <span>{statusMessage.text}</span>
+              <div className="flex-1 space-y-1.5">
+                <span className="block leading-relaxed">{statusMessage.text}</span>
+                {statusMessage.type === 'error' &&
+                  statusMessage.text.includes('Authorized domains') &&
+                  typeof window !== 'undefined' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(window.location.hostname);
+                        setCopiedDomain(true);
+                        setTimeout(() => setCopiedDomain(false), 2500);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-lg border border-red-300 bg-white px-2.5 py-1 text-[11px] font-bold text-red-700 hover:bg-red-100 dark:border-red-800 dark:bg-red-900/40 dark:text-red-200"
+                    >
+                      {copiedDomain ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                      <span>
+                        {copiedDomain
+                          ? `คัดลอก ${window.location.hostname} แล้ว`
+                          : `คัดลอกโดเมน (${window.location.hostname})`}
+                      </span>
+                    </button>
+                  )}
+              </div>
             </div>
           )}
         </div>

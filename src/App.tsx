@@ -928,7 +928,7 @@ export default function App() {
         title: 'การเชื่อมต่อ Google ไม่สำเร็จ',
         message: err.message || 'โปรดตรวจสอบการอนุญาตสิทธิ์',
       });
-      return false;
+      throw err;
     } finally {
       if (!wasRedirected) {
         setIsGoogleLoading(false);
