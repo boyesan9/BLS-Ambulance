@@ -9,7 +9,8 @@ interface LoginViewProps {
   onLogin: (user: UserProfile) => void;
   staffList: UserProfile[];
   onGoogleLogin?: (
-    intent?: Omit<RedirectLoginIntent, 'timestamp'>
+    intent?: Omit<RedirectLoginIntent, 'timestamp'>,
+    forcePopup?: boolean
   ) => Promise<'success' | 'redirected' | boolean | void>;
   isGoogleLoading?: boolean;
   googleUser?: FirebaseUser | null;

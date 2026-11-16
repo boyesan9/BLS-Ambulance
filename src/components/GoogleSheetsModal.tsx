@@ -117,12 +117,16 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
 
   if (!isOpen || currentUser.role !== 'admin') return null;
 
-  const handleGoogleSignIn = async () => {
+  const handleGoogleSignIn = async (forcePopup = false) => {
     setIsLoggingIn(true);
     setStatusMessage(null);
+    let wasRedirected = false;
     try {
-      const res = await googleSignIn({ intent: { type: 'sheets_modal' } });
-      if (res?.redirected) return;
+      const res = await googleSignIn({ intent: { type: 'sheets_modal' }, forcePopup });
+      if (res?.redirected) {
+        wasRedirected = true;
+        return;
+      }
       if (res?.user) {
         onGoogleLoginSuccess(res.user);
         setStatusMessage({
@@ -136,7 +140,9 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
         text: err.message || 'ไม่สามารถเข้าสู่ระบบ Google ได้',
       });
     } finally {
-      setIsLoggingIn(false);
+      if (!wasRedirected) {
+        setIsLoggingIn(false);
+      }
     }
   };
 
@@ -460,15 +466,25 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
               </div>
 
               {!googleUser ? (
-                <button
-                  type="button"
-                  onClick={handleGoogleSignIn}
-                  disabled={isLoggingIn}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-                >
-                  <LogIn className="h-3.5 w-3.5 text-sky-600" />
-                  {isLoggingIn ? 'กำลังเชื่อมต่อ...' : 'ลงชื่อเข้าใช้ Google'}
-                </button>
+                <div className="flex flex-col items-end gap-1">
+                  <button
+                    type="button"
+                    onClick={() => handleGoogleSignIn(false)}
+                    disabled={isLoggingIn}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  >
+                    <LogIn className="h-3.5 w-3.5 text-sky-600" />
+                    {isLoggingIn ? 'กำลังเชื่อมต่อ...' : 'ลงชื่อเข้าใช้ Google'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleGoogleSignIn(true)}
+                    disabled={isLoggingIn}
+                    className="text-[10px] font-medium text-sky-600 hover:underline dark:text-sky-400"
+                  >
+                    หรือเชื่อมต่อผ่านหน้าต่าง Popup
+                  </button>
+                </div>
               ) : (
                 <span className="flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
                   <CheckCircle2 className="h-4 w-4" /> เชื่อมต่อแล้ว
