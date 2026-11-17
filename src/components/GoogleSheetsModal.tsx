@@ -371,7 +371,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
           module: 'ระบบภาพรวม',
           targetItem: res.spreadsheetId,
           operator: `${currentUser.name} (${currentUser.role === 'admin' ? 'Admin' : currentUser.role === 'executive' ? 'Executive' : 'Staff'})`,
-          details: `สร้างชีตครบทั้ง 9 แท็บ: ตรวจสภาพรถ, ถ่ายสภาพรถ 4 ด้าน, กองรถ (${vehicles.length} คัน), เจ้าหน้าที่ (${staffList.length} คน), รอยรอบคัน (${currentDamage.length} จุด), น้ำมัน (${currentFuel.length} รายการ), ตรวจอุปกรณ์ BLS (${currentEquipment.length} รายการ), เบิกอุปกรณ์ (${currentRequisitions.length} ใบเบิก) และ Audit Log`,
+          details: `สร้างชีตครบทั้ง 9 แท็บ: ตรวจสภาพรถ, ถ่ายสภาพรถ 4 ด้าน, รถยนต์ส่วนกลาง (รถกู้ชีพ) (${vehicles.length} คัน), เจ้าหน้าที่ (${staffList.length} คน), รอยรอบคัน (${currentDamage.length} จุด), น้ำมัน (${currentFuel.length} รายการ), ตรวจอุปกรณ์ BLS (${currentEquipment.length} รายการ), เบิกอุปกรณ์ (${currentRequisitions.length} ใบเบิก) และ Audit Log`,
         },
         token
       );
@@ -485,7 +485,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
           module: 'ระบบภาพรวม',
           targetItem: `สเปรดชีต ${cleanCurrentSheetId.slice(0, 10)}...`,
           operator: `${currentUser.name} (${currentUser.role === 'admin' ? 'Admin' : currentUser.role === 'executive' ? 'Executive' : 'Staff'})`,
-          details: `ซิงค์ตรวจสภาพ ${count} รายการ, กองรถ ${vehicles.length} คัน, เจ้าหน้าที่ ${staffList.length} คน, รอยรอบคัน ${currentDamage.length} จุด, เติมน้ำมัน ${currentFuel.length} ครั้ง, อุปกรณ์ BLS ${currentEquipment.length} รายการ, เบิกอุปกรณ์ ${currentRequisitions.length} ใบเบิก`,
+          details: `ซิงค์ตรวจสภาพ ${count} รายการ, รถยนต์ส่วนกลาง (รถกู้ชีพ) ${vehicles.length} คัน, เจ้าหน้าที่ ${staffList.length} คน, รอยรอบคัน ${currentDamage.length} จุด, เติมน้ำมัน ${currentFuel.length} ครั้ง, อุปกรณ์ BLS ${currentEquipment.length} รายการ, เบิกอุปกรณ์ ${currentRequisitions.length} ใบเบิก`,
         },
         activeToken
       );
@@ -504,7 +504,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
 
       setStatusMessage({
         type: 'success',
-        text: `ซิงค์ข้อมูลลง Google Sheets & โฟลเดอร์ Drive ครบถ้วนทั้ง 9 แท็บ (ตรวจสภาพ ${count}, รูปถ่าย 4 ด้าน ${count}, กองรถ ${vehicles.length}, เจ้าหน้าที่ ${staffList.length}, รอยรอบคัน ${currentDamage.length}, น้ำมัน ${currentFuel.length}, อุปกรณ์ BLS ${currentEquipment.length}, เบิกอุปกรณ์ ${currentRequisitions.length})!`,
+        text: `ซิงค์ข้อมูลลง Google Sheets & โฟลเดอร์ Drive ครบถ้วนทั้ง 9 แท็บ (ตรวจสภาพ ${count}, รูปถ่าย 4 ด้าน ${count}, รถยนต์ส่วนกลาง (รถกู้ชีพ) ${vehicles.length}, เจ้าหน้าที่ ${staffList.length}, รอยรอบคัน ${currentDamage.length}, น้ำมัน ${currentFuel.length}, อุปกรณ์ BLS ${currentEquipment.length}, เบิกอุปกรณ์ ${currentRequisitions.length})!`,
       });
     } catch (err: any) {
       setStatusMessage({
@@ -867,7 +867,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <p className="text-xs font-semibold text-slate-900 dark:text-white">
-                  ผลตรวจรอซิงค์: {pendingCount} รายการ · กองรถ: {vehicles.length} คัน · เจ้าหน้าที่: {staffList.length} ท่าน
+                  ผลตรวจรอซิงค์: {pendingCount} รายการ · รถยนต์ส่วนกลาง (รถกู้ชีพ): {vehicles.length} คัน · เจ้าหน้าที่: {staffList.length} ท่าน
                 </p>
                 <p className="text-[11px] text-slate-400">
                   ดึงข้อมูลจากชีต (อ่านได้ทันทีเมื่อแชร์สาธารณะ/Apps Script) หรือซิงค์ข้อมูลทั้งหมดขึ้นชีต & Drive
@@ -880,7 +880,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
                   disabled={isPullingData || !cleanCurrentSheetId}
                   onClick={handlePullDataFromSheets}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-sky-300 bg-sky-50 px-3 py-1.5 text-xs font-bold text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-300"
-                  title="ดึงข้อมูลกองรถและเจ้าหน้าที่จาก Google Sheets คืนสู่ระบบ"
+                  title="ดึงข้อมูลรถยนต์ส่วนกลาง (รถกู้ชีพ) และเจ้าหน้าที่จาก Google Sheets คืนสู่ระบบ"
                 >
                   <DownloadCloud className={`h-3.5 w-3.5 ${isPullingData ? 'animate-bounce' : ''}`} />
                   <span>{isPullingData ? 'กำลังดึงข้อมูล...' : 'ดึงข้อมูลคืน (Sync Back)'}</span>
@@ -891,7 +891,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
                   disabled={isSyncingAll || !cleanCurrentSheetId}
                   onClick={handleSyncAllPending}
                   className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-emerald-500 disabled:opacity-50"
-                  title="อัปโหลดผลตรวจ กองรถ และเจ้าหน้าที่ขึ้น Sheets ทั้งหมด"
+                  title="อัปโหลดผลตรวจ รถยนต์ส่วนกลาง (รถกู้ชีพ) และเจ้าหน้าที่ขึ้น Sheets ทั้งหมด"
                 >
                   <RefreshCw className={`h-3.5 w-3.5 ${isSyncingAll ? 'animate-spin' : ''}`} />
                   <span>{isSyncingAll ? 'กำลังซิงค์...' : 'ซิงค์ข้อมูลขึ้นชีต'}</span>

@@ -238,7 +238,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               {isAdmin
                 ? 'แดชบอร์ดผู้ดูแลระบบยานพาหนะและบุคลากร (Admin Console)'
                 : isExecutive
-                ? 'แดชบอร์ดผู้บริหาร — ภาพรวมทุกระบบและรายละเอียดกองรถ (Executive Console)'
+                ? 'แดชบอร์ดผู้บริหาร — ภาพรวมทุกระบบและรายละเอียดรถยนต์ส่วนกลาง (รถกู้ชีพ)'
                 : 'แดชบอร์ดภาพรวมรถกู้ชีพ BLS และประวัติการตรวจ (Staff Dashboard)'}
             </span>
           </h2>
@@ -246,7 +246,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             {isAdmin
               ? 'ภาพรวมความพร้อมของรถกู้ชีพ BLS ส่วนกลาง · ระบบจัดการพนักงาน · สถิติและการซิงค์ข้อมูล'
               : isExecutive
-              ? 'ติดตามภาพรวมความพร้อมกองรถ อุปกรณ์ BLS ใบเบิก รอยรอบตัวรถ น้ำมัน พร้อมตรวจสอบรายละเอียดและพิมพ์รายงาน .PDF'
+              ? 'ติดตามภาพรวมความพร้อมรถยนต์ส่วนกลาง (รถกู้ชีพ) อุปกรณ์ BLS ใบเบิก รอยรอบตัวรถ น้ำมัน พร้อมตรวจสอบรายละเอียดและพิมพ์รายงาน .PDF'
               : 'ภาพรวมสถานะความพร้อมของรถกู้ชีพส่วนกลาง · ประวัติการตรวจสภาพประจำเวร · พิมพ์ใบรายงานผล'}
           </p>
         </div>
@@ -373,7 +373,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               />
             </div>
           </div>
-          <p className="mt-1 text-[11px] text-slate-400">ความพร้อมทั้งกองยาน</p>
+          <p className="mt-1 text-[11px] text-slate-400">ความพร้อมรถยนต์ส่วนกลาง (รถกู้ชีพ) ทั้งหมด</p>
         </div>
       </div>
 
@@ -782,7 +782,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <div className="flex items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
                 <div>
                   <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                    สถานะกองรถกู้ชีพ BLS ({vehicles.length} คัน)
+                    สถานะรถยนต์ส่วนกลาง (รถกู้ชีพ) ({vehicles.length} คัน)
                   </h3>
                   <p className="text-[11px] text-slate-400">
                     คลิกที่รถเพื่อตรวจสอบข้อมูลรถและประวัติการตรวจ
@@ -793,7 +793,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   onClick={() => setActiveTab('vehicles')}
                   className="rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
                 >
-                  กองรถทั้งหมด
+                  รถยนต์ส่วนกลาง (รถกู้ชีพ) ทั้งหมด
                 </button>
               </div>
 

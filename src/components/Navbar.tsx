@@ -111,7 +111,8 @@ export const Navbar: React.FC<NavbarProps> = ({
           ? 'แดชบอร์ดผู้บริหาร'
           : 'แดชบอร์ดภาพรวม',
       navLabel: 'แดชบอร์ด',
-      subLabel: currentUser.role === 'executive' ? 'ภาพรวมทุกระบบ' : 'สถิติ/กองรถ/เวร',
+      subLabel:
+        currentUser.role === 'executive' ? 'ภาพรวมทุกระบบ' : 'สถิติ/รถยนต์ส่วนกลาง (รถกู้ชีพ)/เวร',
       icon: LayoutDashboard,
       badge: null,
     },
@@ -181,7 +182,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   </span>
                 </div>
                 <p className="text-[10px] font-medium text-slate-500 dark:text-slate-400 leading-tight hidden xs:block">
-                  ระบบตรวจสภาพและบริหารกองรถกู้ชีพ
+                  ระบบตรวจสภาพและบริหารรถยนต์ส่วนกลาง (รถกู้ชีพ)
                 </p>
               </div>
             </button>

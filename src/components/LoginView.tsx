@@ -120,10 +120,22 @@ export const LoginView: React.FC<LoginViewProps> = ({
       <div className="w-full max-w-lg overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xl dark:border-slate-800 dark:bg-slate-900">
         {/* Header Hero Banner */}
         <div className="bg-gradient-to-br from-slate-900 via-slate-850 to-sky-950 p-6 text-white text-center">
-          <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-sky-500/20 ring-1 ring-sky-400/40">
-            <Shield className="h-8 w-8 text-sky-400" />
+          <div className="mx-auto mb-3 flex items-center justify-center gap-4">
+            <img
+              src="/assets/aistudio/178779920854_ffc824b3.png"
+              alt="ตรา อบต.หงษ์เจริญ อ.ท่าแซะ จ.ชุมพร"
+              className="h-20 w-20 sm:h-24 sm:w-24 rounded-2xl bg-white/95 p-1.5 object-contain shadow-lg ring-1 ring-white/30"
+            />
+            <img
+              src="/assets/aistudio/______33becaaf.png"
+              alt="กู้ชีพ อบต.หงษ์เจริญ 1669 EMS"
+              className="h-20 w-20 sm:h-24 sm:w-24 rounded-2xl bg-white/95 p-1.5 object-contain shadow-lg ring-1 ring-white/30"
+            />
           </div>
           <h2 className="text-xl font-bold tracking-tight">
+            <span className="mb-1 block text-2xl font-bold text-sky-300">
+              องค์การบริหารส่วนตำบลหงษ์เจริญ
+            </span>
             ระบบตรวจรถยนต์ส่วนกลาง
           </h2>
           <p className="mt-1 text-xs text-sky-200">
@@ -291,7 +303,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
                       เข้าสู่ระบบในฐานะผู้บริหาร (Executive)
                     </p>
                     <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
-                      ดูแดชบอร์ดภาพรวมทุกระบบ สถิติกองรถ อุปกรณ์ ใบเบิก รอยรอบตัวรถ น้ำมัน และรายละเอียดข้อมูลทั้งหมด
+                      ดูแดชบอร์ดภาพรวมทุกระบบ สถิติรถยนต์ส่วนกลาง (รถกู้ชีพ) อุปกรณ์ ใบเบิก รอยรอบตัวรถ น้ำมัน และรายละเอียดข้อมูลทั้งหมด
                     </p>
                     <div className="mt-3.5 flex flex-col sm:flex-row items-center justify-center gap-2">
                       <button
