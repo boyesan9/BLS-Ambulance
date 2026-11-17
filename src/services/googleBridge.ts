@@ -1,5 +1,6 @@
 import firebaseConfig from '../../firebase-applet-config.json';
 import {
+  DEFAULT_APPS_SCRIPT_URL,
   DEFAULT_DRIVE_FOLDER_ID,
   DEFAULT_IMAGE_DRIVE_FOLDER_ID,
   DEFAULT_SPREADSHEET_ID,
@@ -14,7 +15,7 @@ const GOOGLE_API_KEY =
 
 export function getActiveAppsScriptUrl(): string {
   const cfg = getGoogleSheetsConfig();
-  return (cfg.appsScriptUrl || import.meta.env.VITE_GOOGLE_APPS_SCRIPT_URL || '').trim();
+  return (cfg.appsScriptUrl || DEFAULT_APPS_SCRIPT_URL).trim();
 }
 
 export function getActiveDriveFolderId(): string {

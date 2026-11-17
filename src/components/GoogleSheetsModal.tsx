@@ -47,6 +47,7 @@ import {
   syncEquipmentInspectionsToSheet,
   syncRequisitionsToSheet,
   INSPECTION_SHEET_TITLE,
+  FOUR_SIDE_PHOTOS_SHEET_TITLE,
   VEHICLES_SHEET_TITLE,
   STAFF_SHEET_TITLE,
   AUDIT_LOG_SHEET_TITLE,
@@ -58,6 +59,7 @@ import {
 import { uploadInspectionMediaToDrive, saveMasterDatabaseToDrive } from '../services/googleDrive';
 import { googleSignIn, getAccessToken } from '../services/firebaseAuth';
 import {
+  DEFAULT_APPS_SCRIPT_URL,
   DEFAULT_DRIVE_FOLDER_ID,
   DEFAULT_IMAGE_DRIVE_FOLDER_ID,
   DEFAULT_SPREADSHEET_ID,
@@ -127,7 +129,9 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
   const [imageDriveFolderId, setImageDriveFolderId] = useState(
     config.imageDriveFolderId || DEFAULT_IMAGE_DRIVE_FOLDER_ID
   );
-  const [appsScriptUrl, setAppsScriptUrl] = useState(config.appsScriptUrl || getActiveAppsScriptUrl());
+  const [appsScriptUrl, setAppsScriptUrl] = useState(
+    config.appsScriptUrl || getActiveAppsScriptUrl() || DEFAULT_APPS_SCRIPT_URL
+  );
   const [isCreating, setIsCreating] = useState(false);
   const [isSyncingAll, setIsSyncingAll] = useState(false);
   const [isPullingData, setIsPullingData] = useState(false);
@@ -143,7 +147,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
       setSpreadsheetId(config.spreadsheetId || DEFAULT_SPREADSHEET_ID);
       setDriveFolderId(config.driveFolderId || DEFAULT_DRIVE_FOLDER_ID);
       setImageDriveFolderId(config.imageDriveFolderId || DEFAULT_IMAGE_DRIVE_FOLDER_ID);
-      setAppsScriptUrl(config.appsScriptUrl || getActiveAppsScriptUrl());
+      setAppsScriptUrl(config.appsScriptUrl || getActiveAppsScriptUrl() || DEFAULT_APPS_SCRIPT_URL);
       setStatusMessage(null);
     }
   }, [
@@ -160,7 +164,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
   const cleanCurrentDriveId = extractGoogleResourceId(driveFolderId) || DEFAULT_DRIVE_FOLDER_ID;
   const cleanCurrentImageDriveId =
     extractGoogleResourceId(imageDriveFolderId) || DEFAULT_IMAGE_DRIVE_FOLDER_ID;
-  const activeBridgeUrl = appsScriptUrl.trim();
+  const activeBridgeUrl = (appsScriptUrl || DEFAULT_APPS_SCRIPT_URL).trim();
   const isBridgeReady = Boolean(activeBridgeUrl || hasNoLoginBridge());
 
   const handleGoogleSignIn = async (forcePopup = false) => {
@@ -221,6 +225,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
       return;
     }
 
+    setAppsScriptUrl(DEFAULT_APPS_SCRIPT_URL);
     onSaveConfig({
       ...config,
       spreadsheetId: cleanCurrentSheetId,
@@ -229,11 +234,11 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
       driveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentDriveId}`,
       imageDriveFolderId: cleanCurrentImageDriveId,
       imageDriveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentImageDriveId}`,
-      appsScriptUrl: '',
+      appsScriptUrl: DEFAULT_APPS_SCRIPT_URL,
     });
     setStatusMessage({
       type: 'success',
-      text: 'ล้างค่า Apps Script URL แล้ว (ระบบยังอ่านชีตสาธารณะและเชื่อมต่อ ID ปลายทางตามปกติ)',
+      text: 'คืนค่า Apps Script Web App URL เริ่มต้นเรียบร้อยแล้ว ระบบพร้อมซิงค์ 2 ทางโดยไม่ต้องเข้า Google!',
     });
   };
 
@@ -366,14 +371,14 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
           module: 'ระบบภาพรวม',
           targetItem: res.spreadsheetId,
           operator: `${currentUser.name} (${currentUser.role === 'admin' ? 'Admin' : 'Staff'})`,
-          details: `สร้างชีตครบทั้ง 8 หมวด: ตรวจสภาพรถ, กองรถ (${vehicles.length} คัน), เจ้าหน้าที่ (${staffList.length} คน), รอยรอบคัน (${currentDamage.length} จุด), น้ำมัน (${currentFuel.length} รายการ), ตรวจอุปกรณ์ BLS (${currentEquipment.length} รายการ), เบิกอุปกรณ์ (${currentRequisitions.length} ใบเบิก) และ Audit Log`,
+          details: `สร้างชีตครบทั้ง 9 แท็บ: ตรวจสภาพรถ, ถ่ายสภาพรถ 4 ด้าน, กองรถ (${vehicles.length} คัน), เจ้าหน้าที่ (${staffList.length} คน), รอยรอบคัน (${currentDamage.length} จุด), น้ำมัน (${currentFuel.length} รายการ), ตรวจอุปกรณ์ BLS (${currentEquipment.length} รายการ), เบิกอุปกรณ์ (${currentRequisitions.length} ใบเบิก) และ Audit Log`,
         },
         token
       );
 
       setStatusMessage({
         type: 'success',
-        text: 'สร้าง Google Spreadsheet ครบถ้วนทั้ง 8 แท็บ และซิงค์ข้อมูลเริ่มต้นเรียบร้อยแล้ว!',
+        text: 'สร้าง Google Spreadsheet ครบถ้วนทั้ง 9 แท็บ และซิงค์ข้อมูลเริ่มต้นเรียบร้อยแล้ว!',
       });
     } catch (err: any) {
       console.error(err);
@@ -499,7 +504,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
 
       setStatusMessage({
         type: 'success',
-        text: `ซิงค์ข้อมูลลง Google Sheets & โฟลเดอร์ Drive ครบถ้วนทั้ง 8 หมวด (ตรวจสภาพ ${count}, กองรถ ${vehicles.length}, เจ้าหน้าที่ ${staffList.length}, รอยรอบคัน ${currentDamage.length}, น้ำมัน ${currentFuel.length}, อุปกรณ์ BLS ${currentEquipment.length}, เบิกอุปกรณ์ ${currentRequisitions.length})!`,
+        text: `ซิงค์ข้อมูลลง Google Sheets & โฟลเดอร์ Drive ครบถ้วนทั้ง 9 แท็บ (ตรวจสภาพ ${count}, รูปถ่าย 4 ด้าน ${count}, กองรถ ${vehicles.length}, เจ้าหน้าที่ ${staffList.length}, รอยรอบคัน ${currentDamage.length}, น้ำมัน ${currentFuel.length}, อุปกรณ์ BLS ${currentEquipment.length}, เบิกอุปกรณ์ ${currentRequisitions.length})!`,
       });
     } catch (err: any) {
       setStatusMessage({
@@ -683,11 +688,15 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
               </div>
             </div>
 
-            {/* 8 Tabs Indicator Grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[11px]">
+            {/* 9 Tabs Indicator Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-[11px]">
               <div className="flex items-center gap-1.5 rounded-lg bg-white/80 p-1.5 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
                 <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
                 <span className="truncate">{INSPECTION_SHEET_TITLE}</span>
+              </div>
+              <div className="flex items-center gap-1.5 rounded-lg bg-white/80 p-1.5 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
+                <Car className="h-3.5 w-3.5 text-sky-600 shrink-0" />
+                <span className="truncate">{FOUR_SIDE_PHOTOS_SHEET_TITLE}</span>
               </div>
               <div className="flex items-center gap-1.5 rounded-lg bg-white/80 p-1.5 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
                 <PackageCheck className="h-3.5 w-3.5 text-teal-600 shrink-0" />
@@ -746,7 +755,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
                 type="url"
                 value={appsScriptUrl}
                 onChange={(e) => setAppsScriptUrl(e.target.value)}
-                placeholder="https://script.google.com/macros/s/.../exec"
+                placeholder={DEFAULT_APPS_SCRIPT_URL}
                 className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-800 shadow-sm focus:border-sky-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
               />
               <div className="flex gap-2 shrink-0">

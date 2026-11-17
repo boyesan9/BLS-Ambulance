@@ -24,6 +24,7 @@ export interface SheetCreationResult {
 }
 
 export const INSPECTION_SHEET_TITLE = 'บันทึกการตรวจรถกู้ชีพ_BLS';
+export const FOUR_SIDE_PHOTOS_SHEET_TITLE = 'ถ่ายสภาพรถ4ด้าน_BLS';
 export const VEHICLES_SHEET_TITLE = 'รายการรถกู้ชีพ_BLS';
 export const STAFF_SHEET_TITLE = 'รายชื่อเจ้าหน้าที่_BLS';
 export const AUDIT_LOG_SHEET_TITLE = 'บันทึกกิจกรรมระบบ_AuditLog';
@@ -50,6 +51,29 @@ export const INSPECTION_HEADERS = [
   'ปัญหาที่พบ / หมายเหตุ',
   'เอกสารแนบ',
   'รูป 4 ด้าน',
+  'รหัสบันทึก (ID)',
+  'รูปด้านหน้า (Front)',
+  'รูปด้านหลัง (Rear)',
+  'รูปด้านซ้าย (Left)',
+  'รูปด้านขวา (Right)',
+];
+
+export const FOUR_SIDE_PHOTO_HEADERS = [
+  'วันที่ตรวจ',
+  'วัน-เวลาที่ตรวจ',
+  'รอบเวร',
+  'รหัสรถ',
+  'เลขทะเบียน',
+  'ผู้ตรวจเช็ค',
+  'ลิงก์รูปด้านหน้า (Front)',
+  'ลิงก์รูปด้านหลัง (Rear)',
+  'ลิงก์รูปด้านซ้าย (Left)',
+  'ลิงก์รูปด้านขวา (Right)',
+  'ภาพด้านหน้า',
+  'ภาพด้านหลัง',
+  'ภาพด้านซ้าย',
+  'ภาพด้านขวา',
+  'โฟลเดอร์ Google Drive',
   'รหัสบันทึก (ID)',
 ];
 
@@ -170,6 +194,7 @@ export async function ensureAllSpreadsheetTabs(
 ): Promise<void> {
   const neededSheets = [
     { title: INSPECTION_SHEET_TITLE, headers: INSPECTION_HEADERS },
+    { title: FOUR_SIDE_PHOTOS_SHEET_TITLE, headers: FOUR_SIDE_PHOTO_HEADERS },
     { title: VEHICLES_SHEET_TITLE, headers: VEHICLE_HEADERS },
     { title: STAFF_SHEET_TITLE, headers: STAFF_HEADERS },
     { title: AUDIT_LOG_SHEET_TITLE, headers: AUDIT_LOG_HEADERS },
@@ -249,6 +274,7 @@ export async function createInspectionSpreadsheet(
 ): Promise<SheetCreationResult> {
   const neededSheets = [
     { title: INSPECTION_SHEET_TITLE, headers: INSPECTION_HEADERS },
+    { title: FOUR_SIDE_PHOTOS_SHEET_TITLE, headers: FOUR_SIDE_PHOTO_HEADERS },
     { title: VEHICLES_SHEET_TITLE, headers: VEHICLE_HEADERS },
     { title: STAFF_SHEET_TITLE, headers: STAFF_HEADERS },
     { title: AUDIT_LOG_SHEET_TITLE, headers: AUDIT_LOG_HEADERS },
@@ -400,11 +426,78 @@ export function formatRecordForSheet(record: InspectionRecord): (string | number
     docInfo,
     photosSummary,
     record.id,
+    frontLink || '-',
+    rearLink || '-',
+    leftLink || '-',
+    rightLink || '-',
+  ];
+}
+
+function resolveSideHttpUrl(rawPhoto?: string, driveUrl?: string): string {
+  if (driveUrl && driveUrl.startsWith('http')) return driveUrl;
+  if (rawPhoto && rawPhoto.startsWith('http')) return rawPhoto;
+  return '';
+}
+
+function buildSheetImageFormula(url?: string): string {
+  if (!url || !url.startsWith('http')) return '-';
+  const displayUrl = (toDisplayableDriveImageUrl(undefined, url) || url).replace(/"/g, '');
+  return `=IMAGE("${displayUrl}")`;
+}
+
+export function extractInspectionDateOnly(uploadTimestamp: string, createdAt?: number): string {
+  const raw = (uploadTimestamp || '').trim();
+  if (raw) {
+    const match = raw.match(/(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/);
+    if (match) return match[1];
+    const firstToken = raw.split(/[\s,]+/)[0];
+    if (firstToken) return firstToken;
+  }
+  if (createdAt) {
+    return new Date(createdAt).toLocaleDateString('th-TH', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    });
+  }
+  return '-';
+}
+
+/**
+ * Format an inspection record for the dedicated daily 4-side photo sheet (ถ่ายสภาพรถ4ด้าน_BLS)
+ */
+export function formatFourSidePhotosForSheet(record: InspectionRecord): (string | number)[] {
+  const frontUrl = resolveSideHttpUrl(record.photos?.front, record.driveLinks?.frontPhotoUrl);
+  const rearUrl = resolveSideHttpUrl(record.photos?.rear, record.driveLinks?.rearPhotoUrl);
+  const leftUrl = resolveSideHttpUrl(record.photos?.left, record.driveLinks?.leftPhotoUrl);
+  const rightUrl = resolveSideHttpUrl(record.photos?.right, record.driveLinks?.rightPhotoUrl);
+
+  const dateOnly = extractInspectionDateOnly(record.uploadTimestamp, record.createdAt);
+  const hasInlineOnly = (raw?: string, httpUrl?: string) =>
+    !httpUrl && Boolean(raw && raw.startsWith('data:image/') && !raw.startsWith('data:image/svg+xml'));
+
+  return [
+    dateOnly,
+    record.uploadTimestamp,
+    record.shiftLabel,
+    record.vehicleCode,
+    record.plateNumber,
+    record.inspectorName,
+    frontUrl || (hasInlineOnly(record.photos?.front, frontUrl) ? 'บันทึกภาพในเครื่องแล้ว (รอซิงค์ Drive)' : '-'),
+    rearUrl || (hasInlineOnly(record.photos?.rear, rearUrl) ? 'บันทึกภาพในเครื่องแล้ว (รอซิงค์ Drive)' : '-'),
+    leftUrl || (hasInlineOnly(record.photos?.left, leftUrl) ? 'บันทึกภาพในเครื่องแล้ว (รอซิงค์ Drive)' : '-'),
+    rightUrl || (hasInlineOnly(record.photos?.right, rightUrl) ? 'บันทึกภาพในเครื่องแล้ว (รอซิงค์ Drive)' : '-'),
+    buildSheetImageFormula(frontUrl),
+    buildSheetImageFormula(rearUrl),
+    buildSheetImageFormula(leftUrl),
+    buildSheetImageFormula(rightUrl),
+    record.driveLinks?.folderUrl || '-',
+    record.id,
   ];
 }
 
 /**
- * Append inspection record to Tab 1
+ * Append inspection record to Tab 1 and dedicated 4-side photo Tab (ถ่ายสภาพรถ4ด้าน_BLS)
  */
 export async function appendInspectionToSheet(
   spreadsheetId: string,
@@ -412,12 +505,20 @@ export async function appendInspectionToSheet(
   accessToken: string
 ): Promise<{ success: boolean; updatedRange?: string }> {
   const rowValues = formatRecordForSheet(record);
+  const photoRowValues = formatFourSidePhotosForSheet(record);
+
   if (!accessToken && getActiveAppsScriptUrl()) {
     await callAppsScriptBridge('appendRow', {
       spreadsheetId,
       sheetTitle: INSPECTION_SHEET_TITLE,
       headers: INSPECTION_HEADERS,
       row: rowValues,
+    });
+    await callAppsScriptBridge('appendRow', {
+      spreadsheetId,
+      sheetTitle: FOUR_SIDE_PHOTOS_SHEET_TITLE,
+      headers: FOUR_SIDE_PHOTO_HEADERS,
+      row: photoRowValues,
     });
     return { success: true };
   }
@@ -426,7 +527,7 @@ export async function appendInspectionToSheet(
 
   const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
     INSPECTION_SHEET_TITLE
-  )}!A:R:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+  )}!A:V:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
 
   const response = await fetch(appendUrl, {
     method: 'POST',
@@ -442,6 +543,19 @@ export async function appendInspectionToSheet(
     throw new Error(errorJson.error?.message || `เกิดข้อผิดพลาดในการบันทึกตรวจสภาพลงชีต (${response.status})`);
   }
 
+  const photoAppendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+    FOUR_SIDE_PHOTOS_SHEET_TITLE
+  )}!A:P:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+
+  await fetch(photoAppendUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ values: [photoRowValues] }),
+  }).catch((e) => console.warn('4-side photo tab append warning:', e));
+
   const result = await response.json();
   return {
     success: true,
@@ -450,7 +564,7 @@ export async function appendInspectionToSheet(
 }
 
 /**
- * Mirror / Sync entire Inspections list to Tab 1 (บันทึกการตรวจรถกู้ชีพ_BLS)
+ * Mirror / Sync entire Inspections list to Tab 1 (บันทึกการตรวจรถกู้ชีพ_BLS) & Tab 9 (ถ่ายสภาพรถ4ด้าน_BLS)
  * Clears stale/deleted rows and writes exact 1:1 records matching Google Drive & App
  */
 export async function syncInspectionsToSheet(
@@ -458,54 +572,142 @@ export async function syncInspectionsToSheet(
   records: InspectionRecord[],
   accessToken: string
 ): Promise<void> {
-  if (!accessToken && getActiveAppsScriptUrl()) {
+  const appsScriptUrl = getActiveAppsScriptUrl();
+  if (!accessToken && appsScriptUrl) {
     await callAppsScriptBridge('syncTab', {
       spreadsheetId,
       sheetTitle: INSPECTION_SHEET_TITLE,
       headers: INSPECTION_HEADERS,
       rows: records.map(formatRecordForSheet),
     });
+    await callAppsScriptBridge('syncTab', {
+      spreadsheetId,
+      sheetTitle: FOUR_SIDE_PHOTOS_SHEET_TITLE,
+      headers: FOUR_SIDE_PHOTO_HEADERS,
+      rows: records.map(formatFourSidePhotosForSheet),
+    });
     return;
   }
 
-  await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
+  try {
+    await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
 
-  const clearUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
-    INSPECTION_SHEET_TITLE
-  )}!A2:R2000:clear`;
+    // Ensure Tab 1 header row has all 22 columns (A1:V1)
+    await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+        INSPECTION_SHEET_TITLE
+      )}!A1:V1?valueInputOption=USER_ENTERED`,
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ values: [INSPECTION_HEADERS] }),
+      }
+    );
 
-  const clearRes = await fetch(clearUrl, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-  });
+    const clearUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+      INSPECTION_SHEET_TITLE
+    )}!A2:V2000:clear`;
 
-  if (!clearRes.ok) {
-    const errorJson = await clearRes.json().catch(() => ({}));
-    throw new Error(errorJson.error?.message || `เกิดข้อผิดพลาดในการล้างข้อมูลเดิมในชีตตรวจสภาพรถ (${clearRes.status})`);
-  }
+    const clearRes = await fetch(clearUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+    });
 
-  if (records.length === 0) return;
+    if (!clearRes.ok) {
+      const errorJson = await clearRes.json().catch(() => ({}));
+      throw new Error(errorJson.error?.message || `เกิดข้อผิดพลาดในการล้างข้อมูลเดิมในชีตตรวจสภาพรถ (${clearRes.status})`);
+    }
 
-  const rows = records.map(formatRecordForSheet);
-  const putUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
-    INSPECTION_SHEET_TITLE
-  )}!A2:R${rows.length + 1}?valueInputOption=USER_ENTERED`;
+    // Ensure dedicated 4-side photo tab headers (A1:P1) and clear rows
+    await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+        FOUR_SIDE_PHOTOS_SHEET_TITLE
+      )}!A1:P1?valueInputOption=USER_ENTERED`,
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ values: [FOUR_SIDE_PHOTO_HEADERS] }),
+      }
+    );
 
-  const response = await fetch(putUrl, {
-    method: 'PUT',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ values: rows }),
-  });
+    await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+        FOUR_SIDE_PHOTOS_SHEET_TITLE
+      )}!A2:P2000:clear`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
 
-  if (!response.ok) {
-    const errorJson = await response.json().catch(() => ({}));
-    throw new Error(errorJson.error?.message || `เกิดข้อผิดพลาดในการซิงค์ตารางตรวจสภาพรถลง Google Sheets (${response.status})`);
+    if (records.length === 0) return;
+
+    const rows = records.map(formatRecordForSheet);
+    const putUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+      INSPECTION_SHEET_TITLE
+    )}!A2:V${rows.length + 1}?valueInputOption=USER_ENTERED`;
+
+    const response = await fetch(putUrl, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ values: rows }),
+    });
+
+    if (!response.ok) {
+      const errorJson = await response.json().catch(() => ({}));
+      throw new Error(errorJson.error?.message || `เกิดข้อผิดพลาดในการซิงค์ตารางตรวจสภาพรถลง Google Sheets (${response.status})`);
+    }
+
+    const photoRows = records.map(formatFourSidePhotosForSheet);
+    const photoPutUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+      FOUR_SIDE_PHOTOS_SHEET_TITLE
+    )}!A2:P${photoRows.length + 1}?valueInputOption=USER_ENTERED`;
+
+    const photoRes = await fetch(photoPutUrl, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ values: photoRows }),
+    });
+
+    if (!photoRes.ok) {
+      const errorJson = await photoRes.json().catch(() => ({}));
+      throw new Error(errorJson.error?.message || `เกิดข้อผิดพลาดในการซิงค์ชีตถ่ายสภาพรถ 4 ด้าน (${photoRes.status})`);
+    }
+  } catch (directErr) {
+    if (appsScriptUrl) {
+      await callAppsScriptBridge('syncTab', {
+        spreadsheetId,
+        sheetTitle: INSPECTION_SHEET_TITLE,
+        headers: INSPECTION_HEADERS,
+        rows: records.map(formatRecordForSheet),
+      });
+      await callAppsScriptBridge('syncTab', {
+        spreadsheetId,
+        sheetTitle: FOUR_SIDE_PHOTOS_SHEET_TITLE,
+        headers: FOUR_SIDE_PHOTO_HEADERS,
+        rows: records.map(formatFourSidePhotosForSheet),
+      });
+      return;
+    }
+    throw directErr;
   }
 }
 
@@ -878,7 +1080,7 @@ export async function pullAllDataFromGoogleSheets(
   }
 
   // 3. Pull Inspections (Tab 1: บันทึกการตรวจรถกู้ชีพ_BLS)
-  const inspRows = await fetchTabRows(INSPECTION_SHEET_TITLE, 'A2:R1000');
+  const inspRows = await fetchTabRows(INSPECTION_SHEET_TITLE, 'A2:V1000');
   const inspections: InspectionRecord[] = [];
   if (inspRows.length > 0) {
     const rows: string[][] = inspRows;
@@ -941,10 +1143,15 @@ export async function pullAllDataFromGoogleSheets(
         const leftUrlMatch = photoCell.match(/ซ้าย:\s*(https:\/\/[^\s|]+)/);
         const rightUrlMatch = photoCell.match(/ขวา:\s*(https:\/\/[^\s|]+)/);
 
-        const frontDriveUrl = frontUrlMatch?.[1];
-        const rearDriveUrl = rearUrlMatch?.[1];
-        const leftDriveUrl = leftUrlMatch?.[1];
-        const rightDriveUrl = rightUrlMatch?.[1];
+        const colFront = (r[18] || '').trim().startsWith('http') ? r[18].trim() : undefined;
+        const colRear = (r[19] || '').trim().startsWith('http') ? r[19].trim() : undefined;
+        const colLeft = (r[20] || '').trim().startsWith('http') ? r[20].trim() : undefined;
+        const colRight = (r[21] || '').trim().startsWith('http') ? r[21].trim() : undefined;
+
+        const frontDriveUrl = colFront || frontUrlMatch?.[1];
+        const rearDriveUrl = colRear || rearUrlMatch?.[1];
+        const leftDriveUrl = colLeft || leftUrlMatch?.[1];
+        const rightDriveUrl = colRight || rightUrlMatch?.[1];
         const folderUrl = folderUrlMatch?.[1] || folderUrlMatch?.[0];
 
         const recordId = (r[17] || '').trim() || `insp-sheet-${vehCode}-${idx + 1}`;
@@ -991,6 +1198,48 @@ export async function pullAllDataFromGoogleSheets(
               }
             : undefined,
         });
+      }
+    }
+  }
+
+  // 3b. Merge dedicated 4-side photos tab (ถ่ายสภาพรถ4ด้าน_BLS) so per-day separated links always restore cleanly
+  const fourSideRows = await fetchTabRows(FOUR_SIDE_PHOTOS_SHEET_TITLE, 'A2:P1000');
+  if (fourSideRows.length > 0 && inspections.length > 0) {
+    const byId = new Map(inspections.map((rec) => [rec.id, rec]));
+    const byTimestampVeh = new Map(
+      inspections.map((rec) => [`${rec.uploadTimestamp}|${rec.vehicleCode}`, rec])
+    );
+    for (const pr of fourSideRows) {
+      const recId = (pr[15] || '').trim();
+      const tsVehKey = `${(pr[1] || '').trim()}|${(pr[3] || '').trim()}`;
+      const target = (recId && byId.get(recId)) || byTimestampVeh.get(tsVehKey);
+      if (!target) continue;
+
+      const fUrl = (pr[6] || '').trim().startsWith('http') ? pr[6].trim() : undefined;
+      const rUrl = (pr[7] || '').trim().startsWith('http') ? pr[7].trim() : undefined;
+      const lUrl = (pr[8] || '').trim().startsWith('http') ? pr[8].trim() : undefined;
+      const riUrl = (pr[9] || '').trim().startsWith('http') ? pr[9].trim() : undefined;
+      const folUrl = (pr[14] || '').trim().startsWith('http') ? pr[14].trim() : undefined;
+
+      target.driveLinks = {
+        ...(target.driveLinks || {}),
+        frontPhotoUrl: target.driveLinks?.frontPhotoUrl || fUrl,
+        rearPhotoUrl: target.driveLinks?.rearPhotoUrl || rUrl,
+        leftPhotoUrl: target.driveLinks?.leftPhotoUrl || lUrl,
+        rightPhotoUrl: target.driveLinks?.rightPhotoUrl || riUrl,
+        folderUrl: target.driveLinks?.folderUrl || folUrl,
+      };
+      if (!target.photos.front && target.driveLinks.frontPhotoUrl) {
+        target.photos.front = toDisplayableDriveImageUrl(undefined, target.driveLinks.frontPhotoUrl) || '';
+      }
+      if (!target.photos.rear && target.driveLinks.rearPhotoUrl) {
+        target.photos.rear = toDisplayableDriveImageUrl(undefined, target.driveLinks.rearPhotoUrl) || '';
+      }
+      if (!target.photos.left && target.driveLinks.leftPhotoUrl) {
+        target.photos.left = toDisplayableDriveImageUrl(undefined, target.driveLinks.leftPhotoUrl) || '';
+      }
+      if (!target.photos.right && target.driveLinks.rightPhotoUrl) {
+        target.photos.right = toDisplayableDriveImageUrl(undefined, target.driveLinks.rightPhotoUrl) || '';
       }
     }
   }

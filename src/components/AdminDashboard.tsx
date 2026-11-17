@@ -30,7 +30,11 @@ import {
   Camera,
 } from 'lucide-react';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
-import { generateSvgCarPlaceholder, toDisplayableDriveImageUrl } from '../services/storage';
+import {
+  generateSvgCarPlaceholder,
+  getDriveImageFallbackUrls,
+  toDisplayableDriveImageUrl,
+} from '../services/storage';
 
 interface AdminDashboardProps {
   currentUser: UserProfile;
@@ -77,10 +81,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onExportCsv,
   onPrintInspection,
 }) => {
-  const [activeTab, setActiveTab] = useState<'history' | 'vehicles' | 'staff'>('history');
+  const [activeTab, setActiveTab] = useState<'history' | 'photos_gallery' | 'vehicles' | 'staff'>('history');
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [filterShift, setFilterShift] = useState<string>('all');
+  const [photoFilterVehicle, setPhotoFilterVehicle] = useState<string>('all');
+  const [photoSearchDate, setPhotoSearchDate] = useState('');
   const [staffSearchTerm, setStaffSearchTerm] = useState('');
 
   // Delete modal state
@@ -304,6 +310,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           }`}
         >
           <span>ตารางประวัติการตรวจสภาพรถ ({inspections.length})</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('photos_gallery')}
+          className={`flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition-all ${
+            activeTab === 'photos_gallery'
+              ? 'bg-slate-900 text-white shadow-sm dark:bg-sky-500'
+              : 'text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
+          }`}
+        >
+          <Camera className="h-3.5 w-3.5" />
+          <span>ดูรูปถ่าย 4 ด้านย้อนหลัง (รายวัน)</span>
         </button>
 
         <button
@@ -622,6 +640,193 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </table>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* TAB 1B: Daily 4-Side Photos Gallery */}
+      {activeTab === 'photos_gallery' && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex flex-1 flex-wrap items-center gap-2 min-w-[220px]">
+              <Search className="h-4 w-4 text-slate-400 shrink-0" />
+              <input
+                type="text"
+                value={photoSearchDate}
+                onChange={(e) => setPhotoSearchDate(e.target.value)}
+                placeholder="ค้นหาตามวันที่ (เช่น 17/11/2569), รหัสรถ, ทะเบียน หรือผู้ตรวจ..."
+                className="flex-1 bg-transparent text-xs text-slate-800 placeholder-slate-400 focus:outline-none dark:text-slate-200"
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={photoFilterVehicle}
+                onChange={(e) => setPhotoFilterVehicle(e.target.value)}
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+              >
+                <option value="all">รถกู้ชีพทั้งหมด</option>
+                {vehicles.map((v) => (
+                  <option key={v.id} value={v.code}>
+                    {v.code} ({v.plateNumber})
+                  </option>
+                ))}
+              </select>
+
+              {spreadsheetUrl && (
+                <a
+                  href={spreadsheetUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+                >
+                  <FileSpreadsheet className="h-3.5 w-3.5" />
+                  <span>ดูแท็บ ถ่ายสภาพรถ4ด้าน_BLS</span>
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
+            </div>
+          </div>
+
+          {(() => {
+            const matching = inspections.filter((rec) => {
+              const q = photoSearchDate.trim().toLowerCase();
+              const matchesQuery =
+                !q ||
+                rec.uploadTimestamp.toLowerCase().includes(q) ||
+                rec.vehicleCode.toLowerCase().includes(q) ||
+                rec.plateNumber.toLowerCase().includes(q) ||
+                rec.inspectorName.toLowerCase().includes(q);
+              const matchesVeh =
+                photoFilterVehicle === 'all' || rec.vehicleCode === photoFilterVehicle;
+              return matchesQuery && matchesVeh;
+            });
+
+            if (matching.length === 0) {
+              return (
+                <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-xs text-slate-400 dark:border-slate-800 dark:bg-slate-900">
+                  ไม่พบประวัติรูปถ่าย 4 ด้านที่ตรงกับเงื่อนไข
+                </div>
+              );
+            }
+
+            return (
+              <div className="space-y-4">
+                {matching.map((rec) => {
+                  const sides = [
+                    { label: 'ด้านหน้า (Front)', url: rec.photos.front, driveUrl: rec.driveLinks?.frontPhotoUrl },
+                    { label: 'ด้านหลัง (Rear)', url: rec.photos.rear, driveUrl: rec.driveLinks?.rearPhotoUrl },
+                    { label: 'ด้านซ้าย (Left)', url: rec.photos.left, driveUrl: rec.driveLinks?.leftPhotoUrl },
+                    { label: 'ด้านขวา (Right)', url: rec.photos.right, driveUrl: rec.driveLinks?.rightPhotoUrl },
+                  ];
+
+                  return (
+                    <div
+                      key={rec.id}
+                      className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
+                    >
+                      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5 dark:border-slate-800">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="rounded-lg bg-sky-50 px-2.5 py-1 font-mono text-xs font-bold text-sky-700 dark:bg-sky-950/50 dark:text-sky-300">
+                            {rec.uploadTimestamp}
+                          </span>
+                          <span className="font-mono text-xs font-bold text-slate-900 dark:text-white">
+                            {rec.vehicleCode}
+                          </span>
+                          <span className="text-xs text-slate-500 dark:text-slate-400">
+                            ทะเบียน {rec.plateNumber} · ผู้ตรวจ: {rec.inspectorName}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {rec.driveLinks?.folderUrl && (
+                            <a
+                              href={rec.driveLinks.folderUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-300"
+                            >
+                              <FolderSync className="h-3 w-3" />
+                              <span>โฟลเดอร์ Drive</span>
+                            </a>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => onViewRecordDetail(rec)}
+                            className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-slate-700 dark:bg-sky-600 dark:hover:bg-sky-500"
+                          >
+                            <Eye className="h-3 w-3" />
+                            <span>ดูรายละเอียดเต็ม</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                        {sides.map((side, idx) => {
+                          const candidates = getDriveImageFallbackUrls(side.url, side.driveUrl);
+                          const imgSrc = candidates[0] || '';
+                          const linkHref = side.driveUrl || rec.driveLinks?.folderUrl;
+                          return (
+                            <div
+                              key={idx}
+                              className="group relative aspect-[4/3] overflow-hidden rounded-xl border border-slate-200 bg-slate-100 dark:border-slate-800 dark:bg-slate-800"
+                            >
+                              {imgSrc ? (
+                                <>
+                                  <img
+                                    src={imgSrc}
+                                    alt={`${rec.vehicleCode} ${side.label}`}
+                                    className="h-full w-full cursor-pointer object-cover transition-transform duration-200 group-hover:scale-105"
+                                    referrerPolicy="no-referrer"
+                                    onClick={() => onViewRecordDetail(rec)}
+                                    onError={(e) => {
+                                      const img = e.currentTarget;
+                                      const nextIdx = Number(img.dataset.attempt || '0') + 1;
+                                      if (nextIdx < candidates.length) {
+                                        img.dataset.attempt = String(nextIdx);
+                                        img.src = candidates[nextIdx];
+                                      }
+                                    }}
+                                  />
+                                  {linkHref && (
+                                    <a
+                                      href={linkHref}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="absolute right-1.5 top-1.5 rounded-md bg-sky-600/90 p-1 text-white hover:bg-sky-500 shadow"
+                                      title="เปิดดูใน Google Drive"
+                                    >
+                                      <ExternalLink className="h-3 w-3" />
+                                    </a>
+                                  )}
+                                </>
+                              ) : (
+                                <div className="flex h-full w-full flex-col items-center justify-center gap-1 text-[11px] text-slate-400">
+                                  <span>ไม่มีภาพ</span>
+                                  {linkHref && (
+                                    <a
+                                      href={linkHref}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="inline-flex items-center gap-1 rounded bg-sky-600 px-2 py-0.5 text-[10px] font-semibold text-white"
+                                    >
+                                      <ExternalLink className="h-3 w-3" /> Drive
+                                    </a>
+                                  )}
+                                </div>
+                              )}
+                              <div className="pointer-events-none absolute bottom-1.5 left-1.5 rounded bg-slate-950/75 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                                {side.label}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
         </div>
       )}
 

@@ -21,7 +21,10 @@ export const DEFAULT_DRIVE_FOLDER_ID = '1WjucI6gr3D-bgeZBXI6oqBgpJ01VHwS9';
 export const DEFAULT_DRIVE_FOLDER_URL = `https://drive.google.com/drive/folders/${DEFAULT_DRIVE_FOLDER_ID}`;
 export const DEFAULT_IMAGE_DRIVE_FOLDER_ID = '1SyOz2lK-1XxLoZRV9ZbloLUilgYizIc-';
 export const DEFAULT_IMAGE_DRIVE_FOLDER_URL = `https://drive.google.com/drive/folders/${DEFAULT_IMAGE_DRIVE_FOLDER_ID}`;
-export const DEFAULT_APPS_SCRIPT_URL = (import.meta.env.VITE_GOOGLE_APPS_SCRIPT_URL || '').trim();
+export const DEFAULT_APPS_SCRIPT_URL = (
+  import.meta.env.VITE_GOOGLE_APPS_SCRIPT_URL ||
+  'https://script.google.com/macros/s/AKfycbwwGwchVxpUSAouAzvDwB8aPd0LAQKYQMZeUrV2UrgwoIB03KNkdVn243-x4a4Y5XtWgw/exec'
+).trim();
 
 // Clean SVG ambulance illustration placeholder
 export function generateSvgCarPlaceholder(label: string, angle: string, color = '#2563eb'): string {
@@ -465,7 +468,7 @@ export function getGoogleSheetsConfig(): GoogleSheetsConfig {
     driveFolderUrl: DEFAULT_DRIVE_FOLDER_URL,
     imageDriveFolderId: DEFAULT_IMAGE_DRIVE_FOLDER_ID,
     imageDriveFolderUrl: DEFAULT_IMAGE_DRIVE_FOLDER_URL,
-    appsScriptUrl: DEFAULT_APPS_SCRIPT_URL || undefined,
+    appsScriptUrl: DEFAULT_APPS_SCRIPT_URL,
     autoSync: true,
   };
   try {
@@ -490,7 +493,7 @@ export function getGoogleSheetsConfig(): GoogleSheetsConfig {
       imageDriveFolderUrl:
         parsed.imageDriveFolderUrl ||
         `https://drive.google.com/drive/folders/${resolvedImageFolderId}`,
-      appsScriptUrl: (parsed.appsScriptUrl || DEFAULT_APPS_SCRIPT_URL || '').trim() || undefined,
+      appsScriptUrl: (parsed.appsScriptUrl || DEFAULT_APPS_SCRIPT_URL).trim(),
     };
   } catch (e) {
     return defaults;
@@ -514,7 +517,7 @@ export function saveGoogleSheetsConfig(config: GoogleSheetsConfig) {
       imageDriveFolderUrl:
         config.imageDriveFolderUrl ||
         `https://drive.google.com/drive/folders/${resolvedImageFolderId}`,
-      appsScriptUrl: (config.appsScriptUrl || '').trim() || undefined,
+      appsScriptUrl: (config.appsScriptUrl || DEFAULT_APPS_SCRIPT_URL).trim(),
     };
     localStorage.setItem(GSHEETS_CONFIG_KEY, JSON.stringify(normalized));
   } catch (e) {
