@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User } from 'firebase/auth';
 import { Shield, Lock, Key, Mail, Eye, EyeOff, X, CheckCircle2, AlertCircle, Copy, Check } from 'lucide-react';
-import { RedirectLoginIntent, auth } from '../services/firebaseAuth';
+import { RedirectLoginIntent, auth, getFirebaseConfigMismatchWarning } from '../services/firebaseAuth';
 import { UserProfile } from '../types';
 
 const AUTHORIZED_ADMIN_EMAILS = [
@@ -165,6 +165,13 @@ export const AdminAuthModal: React.FC<AdminAuthModalProps> = ({
 
         {/* Content Body */}
         <div className="p-6 space-y-5">
+          {mode !== 'switch_role' && getFirebaseConfigMismatchWarning() && !errorMessage && (
+            <div className="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+              <AlertCircle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
+              <span className="leading-relaxed">{getFirebaseConfigMismatchWarning()}</span>
+            </div>
+          )}
+
           {errorMessage && (
             <div className="flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-800 dark:border-red-900 dark:bg-red-950/50 dark:text-red-300">
               <AlertCircle className="h-4 w-4 shrink-0 text-red-600 dark:text-red-400 mt-0.5" />

@@ -133,9 +133,22 @@ export type FirebaseAuthFriendlyError = Error & {
   pendingIntent?: RedirectLoginIntent | null;
 };
 
+export const getFirebaseConfigMismatchWarning = (): string | null => {
+  const domain = resolvedFirebaseConfig.authDomain || '';
+  const pid = resolvedFirebaseConfig.projectId || '';
+  if (domain.endsWith('.firebaseapp.com')) {
+    const domainProject = domain.replace('.firebaseapp.com', '');
+    if (domainProject && pid && domainProject !== pid) {
+      return `การตั้งค่า Firebase ยังไม่ตรงกัน: authDomain เป็น "${domain}" แต่ projectId/apiKey ยังเป็น "${pid}" ทำให้หน้าต่าง Google ปิดตัวเองทันที (กรุณาตั้งค่า VITE_FIREBASE_API_KEY, VITE_FIREBASE_PROJECT_ID, VITE_FIREBASE_APP_ID ให้ตรงกับโปรเจกต์ "${domainProject}")`;
+    }
+  }
+  return null;
+};
+
 export const formatFirebaseAuthError = (error: any): FirebaseAuthFriendlyError => {
   const code = error?.code || '';
   const host = typeof window !== 'undefined' ? window.location.hostname : '';
+  const mismatch = getFirebaseConfigMismatchWarning();
   let message = error?.message || 'ไม่สามารถเข้าสู่ระบบด้วย Google ได้';
 
   if (code === 'auth/unauthorized-domain') {
@@ -143,11 +156,17 @@ export const formatFirebaseAuthError = (error: any): FirebaseAuthFriendlyError =
   } else if (code === 'auth/popup-blocked') {
     message = 'เบราว์เซอร์บล็อกหน้าต่างป๊อปอัพ กรุณาอนุญาตป๊อปอัพสำหรับเว็บไซต์นี้ หรือเปิดใช้งานแบบเต็มหน้าจอ';
   } else if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-    message = 'การเข้าสู่ระบบด้วย Google ถูกปิดหรือยกเลิกก่อนเสร็จสมบูรณ์';
+    message = mismatch
+      ? `${mismatch} [${code}]`
+      : `หน้าต่างเข้าสู่ระบบ Google ถูกปิดก่อนเสร็จสมบูรณ์ [${code}] (หากหน้าต่างเด้งขึ้นมาแล้วปิดทันที มักเกิดจาก authDomain/projectId ไม่ตรงกัน หรือยังไม่ได้เพิ่มโดเมน "${host}" ใน Authorized domains)`;
   } else if (code === 'auth/operation-not-allowed') {
     message = `ยังไม่ได้เปิดใช้งาน Google Sign-in ใน Firebase Console (${resolvedFirebaseConfig.projectId}) > Authentication > Sign-in method`;
+  } else if (code === 'auth/invalid-api-key' || code === 'auth/app-not-authorized' || code === 'auth/internal-error') {
+    message = mismatch ? `${mismatch} [${code}]` : `การตั้งค่า Firebase ไม่ถูกต้อง (${code}) กรุณาตรวจสอบ API Key, Project ID และ Authorized domains`;
   } else if (code === 'auth/network-request-failed') {
     message = 'ไม่สามารถเชื่อมต่อบริการยืนยันตัวตน Google ได้ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต';
+  } else if (mismatch) {
+    message = `${mismatch}${code ? ` [${code}]` : ''}`;
   }
 
   const formatted = new Error(message) as FirebaseAuthFriendlyError;
