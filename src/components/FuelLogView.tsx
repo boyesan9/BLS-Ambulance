@@ -328,14 +328,16 @@ export const FuelLogView: React.FC<FuelLogViewProps> = ({
             <span>ส่งออก CSV</span>
           </button>
 
-          <button
-            type="button"
-            onClick={handleOpenAddModal}
-            className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white shadow-sm hover:bg-emerald-500 transition-all"
-          >
-            <Plus className="h-4 w-4" />
-            <span>บันทึกการเติมน้ำมัน</span>
-          </button>
+          {currentUser.role !== 'executive' && (
+            <button
+              type="button"
+              onClick={handleOpenAddModal}
+              className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white shadow-sm hover:bg-emerald-500 transition-all"
+            >
+              <Plus className="h-4 w-4" />
+              <span>บันทึกการเติมน้ำมัน</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -531,18 +533,19 @@ export const FuelLogView: React.FC<FuelLogViewProps> = ({
                             <span>ดูสลิป</span>
                           </button>
                         )}
-                        {currentUser.role === 'admin' && log.receiptDriveUrl && (
-                          <a
-                            href={log.receiptDriveUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
-                            title="เปิดดูสลิปใน Google Drive"
-                          >
-                            <ExternalLink className="h-3 w-3" />
-                            <span>Drive</span>
-                          </a>
-                        )}
+                        {(currentUser.role === 'admin' || currentUser.role === 'executive') &&
+                          log.receiptDriveUrl && (
+                            <a
+                              href={log.receiptDriveUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+                              title="เปิดดูสลิปใน Google Drive"
+                            >
+                              <ExternalLink className="h-3 w-3" />
+                              <span>Drive</span>
+                            </a>
+                          )}
                         {!log.receiptPhotoUrl && !log.receiptDriveUrl && (
                           <span className="text-[11px] text-slate-400">ไม่มี</span>
                         )}

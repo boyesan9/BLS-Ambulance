@@ -832,13 +832,20 @@ export async function syncStaffToSheet(
   staffList: UserProfile[],
   accessToken: string
 ): Promise<void> {
+  const formatStaffRoleLabel = (role: UserProfile['role']) =>
+    role === 'admin'
+      ? 'ผู้ดูแลระบบ (Admin)'
+      : role === 'executive'
+      ? 'ผู้บริหาร (Executive)'
+      : 'พนักงานทั่วไป (Staff)';
+
   const nowStr = new Date().toLocaleString('th-TH');
   if (!accessToken && getActiveAppsScriptUrl()) {
     const bridgeRows = staffList.map((s) => [
       s.employeeId,
       s.name,
-      s.role === 'admin' ? 'ผู้ดูแลระบบ (Admin)' : 'พนักงานทั่วไป (Staff)',
-      s.position || 'เจ้าหน้าที่กู้ชีพ',
+      formatStaffRoleLabel(s.role),
+      s.position || (s.role === 'executive' ? 'ผู้บริหาร' : 'เจ้าหน้าที่กู้ชีพ'),
       s.department || 'ฝ่ายปฏิบัติการกู้ชีพ BLS',
       s.phone || '-',
       s.status === 'on_leave' ? 'พักเวร' : s.status === 'inactive' ? 'ไม่ได้ปฏิบัติงาน' : 'พร้อมปฏิบัติงาน',
@@ -860,8 +867,8 @@ export async function syncStaffToSheet(
   const rows = staffList.map((s) => [
     s.employeeId,
     s.name,
-    s.role === 'admin' ? 'ผู้ดูแลระบบ (Admin)' : 'พนักงานทั่วไป (Staff)',
-    s.position || 'เจ้าหน้าที่กู้ชีพ',
+    formatStaffRoleLabel(s.role),
+    s.position || (s.role === 'executive' ? 'ผู้บริหาร' : 'เจ้าหน้าที่กู้ชีพ'),
     s.department || 'ฝ่ายปฏิบัติการกู้ชีพ BLS',
     s.phone || '-',
     s.status === 'on_leave' ? 'พักเวร' : s.status === 'inactive' ? 'ไม่ได้ปฏิบัติงาน' : 'พร้อมปฏิบัติงาน',
@@ -1054,9 +1061,11 @@ export async function pullAllDataFromGoogleSheets(
       if (r[0] && r[1]) {
         // Has employeeId and name
         const roleStr = (r[2] || '').toLowerCase();
-        const role =
+        const role: UserProfile['role'] =
           roleStr.includes('admin') || roleStr.includes('ผู้ดูแล') || (r[8] || '').includes('admin')
             ? 'admin'
+            : roleStr.includes('executive') || roleStr.includes('ผู้บริหาร') || (r[8] || '').includes('executive')
+            ? 'executive'
             : 'staff';
         const status = (r[6] || '').includes('พักเวร')
           ? 'on_leave'
@@ -1278,7 +1287,11 @@ export async function pullAllDataFromGoogleSheets(
           description: r[5] || '',
           odometerAtReport: Number(r[6]) || undefined,
           inspectorName: r[7] || 'เจ้าหน้าที่',
-          inspectorRole: (r[8] || '').includes('Admin') ? 'admin' : 'staff',
+          inspectorRole: (r[8] || '').includes('Admin')
+            ? 'admin'
+            : (r[8] || '').includes('Executive') || (r[8] || '').includes('ผู้บริหาร')
+            ? 'executive'
+            : 'staff',
           photoUrl: driveUrl || fallbackSvg,
           drivePhotoUrl: driveUrl,
           driveFolderUrl: r[11]?.startsWith('http') ? r[11] : undefined,
@@ -1492,7 +1505,11 @@ export function formatDamageForSheet(item: VehicleDamageItem): any[] {
     item.description || '-',
     item.odometerAtReport || 0,
     item.inspectorName,
-    item.inspectorRole === 'admin' ? 'ผู้ดูแลระบบ (Admin)' : 'พนักงานทั่วไป (Staff)',
+    item.inspectorRole === 'admin'
+      ? 'ผู้ดูแลระบบ (Admin)'
+      : item.inspectorRole === 'executive'
+      ? 'ผู้บริหาร (Executive)'
+      : 'พนักงานทั่วไป (Staff)',
     item.drivePhotoUrl || (item.photoUrl ? 'มีภาพบันทึกในระบบ' : '-'),
     addDrivePhotos || '-',
     item.driveFolderUrl || '-',

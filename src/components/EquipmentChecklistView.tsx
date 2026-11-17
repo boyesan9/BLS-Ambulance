@@ -34,6 +34,7 @@ import {
   X,
   ClipboardList,
   Save,
+  FileDown,
 } from 'lucide-react';
 
 interface EquipmentChecklistViewProps {
@@ -53,9 +54,18 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
   onDeleteRecord,
   isSubmitting = false,
 }) => {
+  const isExecutive = currentUser.role === 'executive';
   const defaultDate = useMemo(() => getDefaultThaiDateParts(), []);
 
-  const [activeTab, setActiveTab] = useState<'form' | 'history'>('form');
+  const [activeTab, setActiveTab] = useState<'form' | 'history'>(() =>
+    currentUser.role === 'executive' ? 'history' : 'form'
+  );
+
+  React.useEffect(() => {
+    if (isExecutive && activeTab !== 'history') {
+      setActiveTab('history');
+    }
+  }, [isExecutive, activeTab]);
   const [team, setTeam] = useState<EquipmentTeamType>('team_1');
   const [inspectDay, setInspectDay] = useState(defaultDate.day);
   const [inspectMonth, setInspectMonth] = useState(defaultDate.month);
@@ -234,8 +244,20 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
     });
   }, [records, historyTeamFilter, searchQuery]);
 
-  // Official Printable HTML builder matching the exact user specification
-  const buildOfficialFormHtml = (rec: EquipmentInspectionRecord) => {
+  const escapeEquipmentHtml = (str: string) =>
+    (str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+
+  const getSafePdfFilename = (rec: EquipmentInspectionRecord) =>
+    `ตรวจความพร้อมอุปกรณ์_${rec.organizationName}_${rec.teamLabel}_${rec.inspectDateFormatted}`
+      .replace(/[\\/:*?"<>|]/g, '_')
+      .trim();
+
+  // Official Printable A4 Government PDF HTML builder
+  const buildOfficialFormHtml = (rec: EquipmentInspectionRecord, showTopToolbar = false) => {
     const catIds = [1, 2, 3, 4];
     const tableBodyHtml = catIds
       .map((catId) => {
@@ -257,41 +279,43 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
         const subHtml = subGroups
           .map((sg) => {
             const subHeader = sg.subTitle
-              ? `<tr style="background:#f8fafc;">
-                  <td colspan="4" style="padding:4px 8px 4px 18px; border:1px solid #94a3b8; font-weight:700; font-size:11px;">${sg.subTitle}</td>
+              ? `<tr class="sub-cat-row">
+                  <td colspan="4">${escapeEquipmentHtml(sg.subTitle)}</td>
                  </tr>`
               : '';
 
             const rows = sg.items
               .map((item) => {
-                const indent = item.subCategoryTitle ? '28px' : '14px';
+                const indent = item.subCategoryTitle ? '26px' : '12px';
                 const qtyText = `${item.availableQty} ${item.unit}`;
                 const statusText =
                   item.conditionStatus === 'damaged'
-                    ? 'ชำรุด'
+                    ? '✗ ชำรุด'
                     : item.minCount !== null && item.availableQty < item.minCount
-                    ? 'ไม่ครบเกณฑ์'
+                    ? '⚠ ไม่ครบเกณฑ์'
                     : item.minCount === null && item.availableQty === 0
                     ? '-'
-                    : 'ครบ/พร้อม';
+                    : '✓ ครบ/พร้อม';
                 const statusColor =
                   item.conditionStatus === 'damaged'
-                    ? '#dc2626'
+                    ? '#b91c1c'
                     : item.minCount !== null && item.availableQty < item.minCount
-                    ? '#d97706'
+                    ? '#b45309'
                     : '#15803d';
-                const noteText = item.notes ? `${statusText} (${item.notes})` : statusText;
-                return `<tr>
-                  <td style="padding:3.5px 8px 3.5px ${indent}; border:1px solid #94a3b8; font-size:10.5px;">
-                    <span style="font-weight:600;">${item.itemCode}</span> ${item.name}
+                const noteText = item.notes
+                  ? `${statusText} (${escapeEquipmentHtml(item.notes)})`
+                  : statusText;
+                return `<tr class="item-row">
+                  <td style="padding:3.5px 8px 3.5px ${indent}; border:1px solid #475569;">
+                    <span style="font-weight:600;">${escapeEquipmentHtml(item.itemCode)}</span> ${escapeEquipmentHtml(item.name)}
                   </td>
-                  <td style="padding:3.5px 6px; border:1px solid #94a3b8; text-align:center; font-size:10.5px; white-space:nowrap;">
-                    ${item.minRequirementLabel}
+                  <td style="padding:3.5px 6px; border:1px solid #475569; text-align:center; white-space:nowrap;">
+                    ${escapeEquipmentHtml(item.minRequirementLabel)}
                   </td>
-                  <td style="padding:3.5px 6px; border:1px solid #94a3b8; text-align:center; font-weight:700; font-size:10.5px; white-space:nowrap;">
-                    ${qtyText}
+                  <td style="padding:3.5px 6px; border:1px solid #475569; text-align:center; font-weight:700; white-space:nowrap;">
+                    ${escapeEquipmentHtml(qtyText)}
                   </td>
-                  <td style="padding:3.5px 6px; border:1px solid #94a3b8; font-size:10px; color:${statusColor};">
+                  <td style="padding:3.5px 6px; border:1px solid #475569; font-weight:600; color:${statusColor};">
                     ${noteText}
                   </td>
                 </tr>`;
@@ -303,8 +327,8 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
           .join('');
 
         return `
-          <tr style="background:#e2e8f0;">
-            <td colspan="4" style="padding:5px 8px; border:1px solid #94a3b8; font-weight:700; font-size:11px;">${catTitle}</td>
+          <tr class="cat-row">
+            <td colspan="4">${escapeEquipmentHtml(catTitle)}</td>
           </tr>
           ${subHtml}
         `;
@@ -313,137 +337,299 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
 
     const checkTeam1 = rec.team === 'team_1' ? '☑' : '☐';
     const checkTeam2 = rec.team === 'team_2' ? '☑' : '☐';
+    const pdfTitle = getSafePdfFilename(rec);
 
     return `<!DOCTYPE html>
 <html lang="th">
 <head>
   <meta charset="utf-8" />
-  <title>ตรวจความพร้อมอุปกรณ์_${rec.organizationName}_${rec.inspectDateFormatted}</title>
+  <title>${escapeEquipmentHtml(pdfTitle)}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
-    @page { size: A4 portrait; margin: 10mm 12mm; }
-    * { box-sizing: border-box; }
+    @page {
+      size: A4 portrait;
+      margin: 12mm 14mm;
+    }
+    * {
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
     body {
-      font-family: 'Sarabun', 'Prompt', -apple-system, BlinkMacSystemFont, sans-serif;
-      color: #0f172a;
-      background: #ffffff;
+      font-family: 'Sarabun', 'TH Sarabun New', 'TH SarabunPSK', sans-serif;
+      color: #000000;
+      background: ${showTopToolbar ? '#e2e8f0' : '#ffffff'};
       margin: 0;
-      padding: 12px 16px;
-      font-size: 11px;
-      line-height: 1.35;
+      padding: ${showTopToolbar ? '0 0 32px 0' : '0'};
+      font-size: 12.5px;
+      line-height: 1.4;
+    }
+    .toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: #0f172a;
+      color: #ffffff;
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+    }
+    .toolbar-btn {
+      background: #0284c7;
+      color: #ffffff;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 16px;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .toolbar-btn:hover {
+      background: #0369a1;
+    }
+    .page-sheet {
+      background: #ffffff;
+      width: ${showTopToolbar ? '210mm' : '100%'};
+      margin: ${showTopToolbar ? '18px auto' : '0'};
+      padding: ${showTopToolbar ? '14mm 16mm' : '0'};
+      box-shadow: ${showTopToolbar ? '0 8px 28px rgba(15, 23, 42, 0.16)' : 'none'};
+    }
+    .doc-ref {
+      display: flex;
+      justify-content: flex-end;
+      font-size: 10.5px;
+      color: #334155;
+      margin-bottom: 4px;
     }
     .doc-header {
       text-align: center;
+      border-bottom: 3px double #0f172a;
+      padding-bottom: 8px;
       margin-bottom: 10px;
     }
     .doc-title {
-      font-size: 14px;
+      font-size: 15.5px;
       font-weight: 700;
+      color: #000000;
       margin: 0;
     }
     .doc-org {
-      font-size: 13px;
+      font-size: 14px;
       font-weight: 700;
+      color: #000000;
       margin: 2px 0;
     }
     .doc-meta {
-      font-size: 11.5px;
+      font-size: 12.5px;
+      color: #0f172a;
       margin-top: 4px;
     }
     .team-row {
-      margin-top: 6px;
-      font-size: 12px;
-      font-weight: 600;
+      margin-top: 4px;
+      font-size: 12.5px;
+      font-weight: 700;
+      color: #0f172a;
     }
-    table {
+    .meta-table {
       width: 100%;
       border-collapse: collapse;
-      margin-top: 8px;
+      margin-bottom: 10px;
+      font-size: 12px;
     }
-    th {
-      background: #0f172a;
-      color: #ffffff;
-      padding: 5px 6px;
+    .meta-table td {
+      border: 1px solid #334155;
+      padding: 5px 9px;
+      vertical-align: top;
+      background: #ffffff;
+    }
+    table.eq-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 4px;
+      font-size: 11.5px;
+    }
+    table.eq-table thead {
+      display: table-header-group;
+    }
+    table.eq-table th {
+      background: #e2e8f0;
+      color: #000000;
+      padding: 5.5px 7px;
+      border: 1px solid #334155;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    tr.cat-row td {
+      padding: 5px 8px;
+      border: 1px solid #334155;
+      background: #e2e8f0;
+      font-weight: 700;
+      font-size: 12px;
+      color: #000000;
+    }
+    tr.sub-cat-row td {
+      padding: 4px 8px 4px 16px;
       border: 1px solid #475569;
-      font-size: 11px;
+      background: #f8fafc;
+      font-weight: 700;
+      font-size: 11.5px;
+      color: #0f172a;
+    }
+    tr.item-row {
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    .notes-box {
+      margin-top: 8px;
+      padding: 6px 10px;
+      border: 1px solid #475569;
+      background: #f8fafc;
+      font-size: 11.5px;
+      break-inside: avoid;
+    }
+    .signatures-wrapper {
+      break-inside: avoid;
+      page-break-inside: avoid;
+      margin-top: 16px;
     }
     .sign-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 20px;
-      margin-top: 14px;
-      page-break-inside: avoid;
+      gap: 24px;
     }
     .sign-box {
-      border: 1px dashed #94a3b8;
-      padding: 8px;
+      padding: 8px 6px;
       text-align: center;
-      border-radius: 6px;
-      font-size: 10.5px;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    .sign-center {
+      margin-top: 14px;
+      display: flex;
+      justify-content: center;
+    }
+    .sign-center .sign-box {
+      width: 68%;
+      max-width: 390px;
     }
     @media print {
-      body { padding: 0; }
+      body {
+        background: #ffffff;
+        padding: 0;
+      }
+      .no-print {
+        display: none !important;
+      }
+      .page-sheet {
+        width: 100%;
+        margin: 0;
+        padding: 0;
+        box-shadow: none;
+      }
     }
   </style>
 </head>
 <body>
-  <div class="doc-header">
-    <div class="doc-title">ตรวจความพร้อมอุปกรณ์สำหรับหน่วยปฏิบัติการแพทย์ระดับพื้นฐาน</div>
-    <div class="doc-org">${rec.organizationName}</div>
-    <div class="doc-meta">
-      ประจำวันที่ <strong>${rec.inspectDay}</strong> เดือน <strong>${rec.inspectMonth}</strong> พ.ศ. <strong>${rec.inspectYear}</strong>
-      ${rec.vehicleCode ? ` &nbsp;|&nbsp; รถปฏิบัติการ: <strong>${rec.vehicleCode}</strong> (${rec.plateNumber || '-'})` : ''}
-    </div>
-    <div class="team-row">
-      ${checkTeam1} ชุดปฏิบัติการที่ 1 &nbsp;&nbsp;&nbsp;&nbsp; ${checkTeam2} ชุดปฏิบัติการที่ 2
-    </div>
-  </div>
-
-  <table>
-    <thead>
-      <tr>
-        <th style="width:54%; text-align:left;">รายการอุปกรณ์</th>
-        <th style="width:14%; text-align:center;">จำนวนขั้นต่ำ</th>
-        <th style="width:14%; text-align:center;">จำนวนที่มี</th>
-        <th style="width:18%; text-align:left;">สภาพ / หมายเหตุ</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${tableBodyHtml}
-    </tbody>
-  </table>
-
   ${
-    rec.summaryNotes
-      ? `<div style="margin-top:8px; padding:6px 8px; border:1px solid #cbd5e1; background:#f8fafc; font-size:10.5px;">
-          <strong>หมายเหตุเพิ่มเติม:</strong> ${rec.summaryNotes}
-         </div>`
+    showTopToolbar
+      ? `<div class="toolbar no-print">
+          <div>
+            <strong>แบบฟอร์มตรวจความพร้อมอุปกรณ์ BLS (${escapeEquipmentHtml(rec.organizationName)})</strong>
+            <span style="font-size:12px; color:#cbd5e1; margin-left:8px;">(${escapeEquipmentHtml(rec.teamLabel)} · ประจำวันที่ ${escapeEquipmentHtml(rec.inspectDateFormatted)})</span>
+          </div>
+          <button type="button" class="toolbar-btn" onclick="window.print()">พิมพ์ / บันทึกเป็น .PDF (A4)</button>
+        </div>`
       : ''
   }
-
-  <div class="sign-grid">
-    <div class="sign-box">
-      <div style="height:24px;"></div>
-      <div>ลงชื่อ..............................................................ผู้ตรวจเช็ค</div>
-      <div style="margin-top:3px; font-weight:700;">( ${rec.inspectorName} )</div>
-      <div style="font-size:9.5px; color:#64748b;">บันทึกเมื่อ: ${rec.uploadTimestamp}</div>
+  <div class="page-sheet">
+    <div class="doc-ref">
+      <span>เลขที่อ้างอิง: ${escapeEquipmentHtml(rec.id)}</span>
     </div>
-    <div class="sign-box">
-      <div style="height:24px;"></div>
-      <div>ผู้ตรวจสอบ.....................................................................</div>
-      <div style="margin-top:3px; font-weight:700;">( นายวสันต์ วรรณเผือก )</div>
-      <div style="margin-top:2px; font-size:10px;">ตำแหน่ง เจ้าพนักงานป้องกันและบรรเทาสาธารณภัยปฏิบัติงาน</div>
-      <div style="margin-top:2px; font-size:10px;">วันที่............เดือน........................พ.ศ. ......................</div>
-    </div>
-  </div>
 
-  <div style="margin-top:14px; display:flex; justify-content:center; page-break-inside:avoid;">
-    <div class="sign-box" style="width:65%; max-width:380px;">
-      <div style="font-weight:700; margin-bottom:4px;">จึงเรียนมาเพื่อโปรดทราบ</div>
-      <div style="height:24px;"></div>
-      <div>ลงชื่อ.....................................................................</div>
-      <div style="margin-top:3px; font-weight:700; white-space:pre;">(        นายนิยม   สังข์เอียด        )</div>
-      <div style="margin-top:2px; font-size:10.5px;">นายกองค์การบริหารส่วนตำบลหงษ์เจริญ</div>
-      <div style="margin-top:2px; font-size:10px;">วันที่............เดือน........................พ.ศ. .......................</div>
+    <div class="doc-header">
+      <div class="doc-title">ตรวจความพร้อมอุปกรณ์สำหรับหน่วยปฏิบัติการแพทย์ระดับพื้นฐาน</div>
+      <div class="doc-org">${escapeEquipmentHtml(rec.organizationName)}</div>
+      <div class="doc-meta">
+        ประจำวันที่ <strong>${escapeEquipmentHtml(rec.inspectDay)}</strong> เดือน <strong>${escapeEquipmentHtml(rec.inspectMonth)}</strong> พ.ศ. <strong>${escapeEquipmentHtml(rec.inspectYear)}</strong>
+      </div>
+      <div class="team-row">
+        ${checkTeam1} ชุดปฏิบัติการที่ 1 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${checkTeam2} ชุดปฏิบัติการที่ 2
+      </div>
+    </div>
+
+    <table class="meta-table">
+      <tbody>
+        <tr>
+          <td style="width:50%;">
+            <div><strong>ผู้ตรวจเช็คอุปกรณ์:</strong> ${escapeEquipmentHtml(rec.inspectorName)}</div>
+            <div><strong>ชุดปฏิบัติการ:</strong> ${escapeEquipmentHtml(rec.teamLabel)}</div>
+            <div><strong>วัน-เวลาบันทึก:</strong> ${escapeEquipmentHtml(rec.uploadTimestamp)}</div>
+          </td>
+          <td style="width:50%;">
+            <div><strong>รถปฏิบัติการประจำชุด:</strong> ${rec.vehicleCode ? `${escapeEquipmentHtml(rec.vehicleCode)} (${escapeEquipmentHtml(rec.plateNumber || '-')})` : 'ตรวจประจำชุดปฏิบัติการ'}</div>
+            <div><strong>รายการเกณฑ์บังคับครบ:</strong> <strong style="color:#15803d;">${rec.requiredPassedCount} / ${rec.requiredTotalCount} รายการ</strong></div>
+            <div><strong>รายการชำรุด / ไม่ครบ:</strong> <strong style="color:${rec.items.filter((i) => i.conditionStatus === 'damaged' || (i.minCount !== null && i.availableQty < i.minCount)).length > 0 ? '#b91c1c' : '#15803d'};">${rec.items.filter((i) => i.conditionStatus === 'damaged' || (i.minCount !== null && i.availableQty < i.minCount)).length} รายการ</strong></div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <table class="eq-table">
+      <thead>
+        <tr>
+          <th style="width:53%; text-align:left;">รายการอุปกรณ์</th>
+          <th style="width:14%; text-align:center;">จำนวนขั้นต่ำ</th>
+          <th style="width:14%; text-align:center;">จำนวนที่มี</th>
+          <th style="width:19%; text-align:left;">สภาพ / หมายเหตุ</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${tableBodyHtml}
+      </tbody>
+    </table>
+
+    ${
+      rec.summaryNotes
+        ? `<div class="notes-box">
+            <strong>หมายเหตุเพิ่มเติม:</strong> ${escapeEquipmentHtml(rec.summaryNotes)}
+           </div>`
+        : ''
+    }
+
+    <div class="signatures-wrapper">
+      <div class="sign-grid">
+        <div class="sign-box">
+          <div style="height:26px;"></div>
+          <div>ลงชื่อ..............................................................ผู้ตรวจเช็ค</div>
+          <div style="font-weight:700;">( ${escapeEquipmentHtml(rec.inspectorName)} )</div>
+          <div>บันทึกเมื่อ: ${escapeEquipmentHtml(rec.uploadTimestamp)}</div>
+          <div>วันที่............เดือน........................พ.ศ. ......................</div>
+        </div>
+        <div class="sign-box">
+          <div style="height:26px;"></div>
+          <div>ผู้ตรวจสอบ.....................................................................</div>
+          <div style="font-weight:700;">( นายวสันต์ วรรณเผือก )</div>
+          <div>ตำแหน่ง เจ้าพนักงานป้องกันและบรรเทาสาธารณภัยปฏิบัติงาน</div>
+          <div>วันที่............เดือน........................พ.ศ. ......................</div>
+        </div>
+      </div>
+
+      <div class="sign-center">
+        <div class="sign-box">
+          <div style="font-weight:700;">จึงเรียนมาเพื่อโปรดทราบ</div>
+          <div style="height:26px;"></div>
+          <div>ลงชื่อ.....................................................................</div>
+          <div style="font-weight:700; white-space:pre;">(        นายนิยม   สังข์เอียด        )</div>
+          <div>นายกองค์การบริหารส่วนตำบลหงษ์เจริญ</div>
+          <div>วันที่............เดือน........................พ.ศ. .......................</div>
+        </div>
+      </div>
     </div>
   </div>
 </body>
@@ -451,9 +637,10 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
   };
 
   const handlePrintViaIframe = (rec: EquipmentInspectionRecord) => {
+    const previousTitle = document.title;
     try {
-      setPrintStatus('กำลังเตรียมเอกสารสำหรับสั่งพิมพ์...');
-      const htmlContent = buildOfficialFormHtml(rec);
+      setPrintStatus('กำลังจัดรูปแบบเอกสาร A4 และโหลดฟอนต์ราชการ...');
+      const htmlContent = buildOfficialFormHtml(rec, false);
       const printFrame = document.createElement('iframe');
       printFrame.setAttribute(
         'style',
@@ -462,18 +649,26 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
       document.body.appendChild(printFrame);
 
       const frameDoc = printFrame.contentDocument || printFrame.contentWindow?.document;
-      if (frameDoc) {
+      if (frameDoc && printFrame.contentWindow) {
         frameDoc.open();
         frameDoc.write(htmlContent);
         frameDoc.close();
-        setTimeout(() => {
+        setTimeout(async () => {
           try {
+            document.title = getSafePdfFilename(rec);
+            if ((frameDoc as any).fonts?.ready) {
+              await Promise.race([
+                (frameDoc as any).fonts.ready,
+                new Promise((res) => setTimeout(res, 1500)),
+              ]);
+            }
             printFrame.contentWindow?.focus();
             printFrame.contentWindow?.print();
-            setPrintStatus('เปิดหน้าต่างสั่งพิมพ์แล้ว');
+            setPrintStatus('เปิดหน้าต่างบันทึกเป็น .PDF / สั่งพิมพ์แล้ว');
           } catch {
             window.print();
           } finally {
+            document.title = previousTitle;
             setTimeout(() => {
               if (document.body.contains(printFrame)) {
                 document.body.removeChild(printFrame);
@@ -481,16 +676,20 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
               setPrintStatus(null);
             }, 2500);
           }
-        }, 400);
+        }, 350);
+      } else {
+        setPrintStatus(null);
       }
     } catch {
+      document.title = previousTitle;
+      setPrintStatus(null);
       window.print();
     }
   };
 
   const handleOpenStandaloneTab = (rec: EquipmentInspectionRecord) => {
     try {
-      const htmlContent = buildOfficialFormHtml(rec);
+      const htmlContent = buildOfficialFormHtml(rec, true);
       const win = window.open('', '_blank');
       if (win) {
         win.document.open();
@@ -533,18 +732,20 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
 
           {/* Sub-Tabs */}
           <div className="flex items-center gap-1.5 rounded-2xl bg-slate-100 p-1.5 dark:bg-slate-800 self-start lg:self-auto">
-            <button
-              type="button"
-              onClick={() => setActiveTab('form')}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-bold transition-all ${
-                activeTab === 'form'
-                  ? 'bg-white text-emerald-700 shadow-xs dark:bg-slate-900 dark:text-emerald-400'
-                  : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
-              }`}
-            >
-              <ClipboardList className="h-4 w-4" />
-              <span>แบบฟอร์มตรวจอุปกรณ์</span>
-            </button>
+            {!isExecutive && (
+              <button
+                type="button"
+                onClick={() => setActiveTab('form')}
+                className={`inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-bold transition-all ${
+                  activeTab === 'form'
+                    ? 'bg-white text-emerald-700 shadow-xs dark:bg-slate-900 dark:text-emerald-400'
+                    : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
+                }`}
+              >
+                <ClipboardList className="h-4 w-4" />
+                <span>แบบฟอร์มตรวจอุปกรณ์</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setActiveTab('history')}
@@ -555,11 +756,44 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
               }`}
             >
               <Calendar className="h-4 w-4" />
-              <span>ประวัติการตรวจ ({records.length})</span>
+              <span>{isExecutive ? `แดชบอร์ดประวัติการตรวจอุปกรณ์ (${records.length})` : `ประวัติการตรวจ (${records.length})`}</span>
             </button>
           </div>
         </div>
       </div>
+
+      {/* Executive / History Summary KPI Strip */}
+      {activeTab === 'history' && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-2xs dark:border-slate-800 dark:bg-slate-900">
+            <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">บันทึกตรวจอุปกรณ์ทั้งหมด</span>
+            <p className="mt-1 font-mono text-xl font-extrabold text-slate-900 dark:text-white tabular-nums">
+              {records.length} <span className="text-xs font-normal text-slate-400">ครั้ง</span>
+            </p>
+          </div>
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-3.5 shadow-2xs dark:border-emerald-950 dark:bg-emerald-950/20">
+            <span className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">พร้อมปฏิบัติการ</span>
+            <p className="mt-1 font-mono text-xl font-extrabold text-emerald-600 dark:text-emerald-400 tabular-nums">
+              {records.filter((r) => r.overallStatus === 'ready').length}{' '}
+              <span className="text-xs font-normal text-emerald-600/70">ครั้ง</span>
+            </p>
+          </div>
+          <div className="rounded-2xl border border-amber-200 bg-amber-50/50 p-3.5 shadow-2xs dark:border-amber-950 dark:bg-amber-950/20">
+            <span className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">อุปกรณ์ไม่ครบเกณฑ์</span>
+            <p className="mt-1 font-mono text-xl font-extrabold text-amber-600 dark:text-amber-400 tabular-nums">
+              {records.filter((r) => r.overallStatus === 'incomplete').length}{' '}
+              <span className="text-xs font-normal text-amber-600/70">ครั้ง</span>
+            </p>
+          </div>
+          <div className="rounded-2xl border border-red-200 bg-red-50/50 p-3.5 shadow-2xs dark:border-red-950 dark:bg-red-950/20">
+            <span className="text-[11px] font-semibold text-red-700 dark:text-red-300">พบชำรุดเร่งด่วน</span>
+            <p className="mt-1 font-mono text-xl font-extrabold text-red-600 dark:text-red-400 tabular-nums">
+              {records.filter((r) => r.overallStatus === 'critical').length}{' '}
+              <span className="text-xs font-normal text-red-600/70">ครั้ง</span>
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* ========================================================= */}
       {/* TAB 1: EQUIPMENT CHECKLIST FORM                           */}
@@ -1303,15 +1537,15 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
           <div className="my-auto w-full max-w-4xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-6 py-4 bg-slate-50 dark:border-slate-800 dark:bg-slate-850">
               <div className="flex items-center gap-2.5">
-                <div className="rounded-lg bg-emerald-100 p-2 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
-                  <Printer className="h-5 w-5" />
+                <div className="rounded-lg bg-sky-100 p-2 text-sky-700 dark:bg-sky-950 dark:text-sky-300">
+                  <FileDown className="h-5 w-5" />
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                    แบบฟอร์มตรวจความพร้อมอุปกรณ์ BLS ({printRecord.organizationName})
+                    พิมพ์ / บันทึกเป็น .PDF แบบฟอร์มตรวจความพร้อมอุปกรณ์ BLS ({printRecord.organizationName})
                   </h3>
                   <p className="text-[11px] text-slate-500">
-                    ประจำวันที่ {printRecord.inspectDateFormatted} · {printRecord.teamLabel}
+                    ประจำวันที่ {printRecord.inspectDateFormatted} · {printRecord.teamLabel} · เลือกปลายทางเป็น &ldquo;บันทึกเป็น PDF (Save as PDF)&rdquo; ขนาด A4
                   </p>
                 </div>
               </div>
@@ -1323,18 +1557,20 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
                 <button
                   type="button"
                   onClick={() => handlePrintViaIframe(printRecord)}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-sky-600 px-3.5 py-2 text-xs font-bold text-white shadow-sm hover:bg-sky-500"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-sky-600 px-3.5 py-2 text-xs font-bold text-white shadow-sm hover:bg-sky-500 active:scale-95 transition-all"
+                  title="พิมพ์หรือบันทึกเป็นไฟล์ .PDF ขนาด A4 รูปแบบราชการ"
                 >
                   <Printer className="h-4 w-4" />
-                  <span>สั่งพิมพ์ทันที</span>
+                  <span>พิมพ์ / บันทึกเป็น .PDF</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => handleOpenStandaloneTab(printRecord)}
                   className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  title="เปิดหน้ากระดาษ A4 เต็มหน้าในแท็บใหม่เพื่อดูตัวอย่างก่อนบันทึก PDF"
                 >
                   <ExternalLink className="h-3.5 w-3.5" />
-                  <span>เปิดในแท็บใหม่</span>
+                  <span>เปิดหน้ากระดาษ A4</span>
                 </button>
                 <button
                   type="button"
@@ -1346,30 +1582,90 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
               </div>
             </div>
 
-            <div className="max-h-[78vh] overflow-y-auto p-6 sm:p-8 bg-white text-slate-900">
-              <div className="text-center mb-4">
-                <h2 className="text-base font-bold">
+            <div
+              className="max-h-[78vh] overflow-y-auto p-6 sm:p-10 bg-white text-slate-950 space-y-4"
+              style={{ fontFamily: "'Sarabun', 'Prompt', sans-serif" }}
+            >
+              <div className="flex justify-end text-[11px] text-slate-600">
+                <span>เลขที่อ้างอิง: {printRecord.id}</span>
+              </div>
+
+              <div className="border-b-[3px] border-double border-slate-900 pb-3 text-center">
+                <h2 className="text-base sm:text-lg font-bold text-slate-950">
                   ตรวจความพร้อมอุปกรณ์สำหรับหน่วยปฏิบัติการแพทย์ระดับพื้นฐาน
                 </h2>
-                <p className="text-sm font-bold mt-0.5">{printRecord.organizationName}</p>
-                <p className="text-xs mt-1">
+                <p className="text-sm sm:text-base font-bold mt-0.5 text-slate-950">
+                  {printRecord.organizationName}
+                </p>
+                <p className="text-xs sm:text-sm mt-1 text-slate-900">
                   ประจำวันที่ <span className="font-bold underline px-1">{printRecord.inspectDay}</span>{' '}
                   เดือน <span className="font-bold underline px-1">{printRecord.inspectMonth}</span>{' '}
                   พ.ศ. <span className="font-bold underline px-1">{printRecord.inspectYear}</span>
                 </p>
-                <div className="mt-2 flex items-center justify-center gap-6 text-xs font-bold">
-                  <span>{printRecord.team === 'team_1' ? '☑' : '☐'} ชุดปฏิบัติการที่ 1</span>
-                  <span>{printRecord.team === 'team_2' ? '☑' : '☐'} ชุดปฏิบัติการที่ 2</span>
+                <div className="mt-1.5 flex items-center justify-center gap-6 text-xs sm:text-sm font-bold text-slate-900">
+                  <span className={printRecord.team === 'team_1' ? 'text-slate-950' : 'text-slate-600'}>
+                    {printRecord.team === 'team_1' ? '☑' : '☐'} ชุดปฏิบัติการที่ 1
+                  </span>
+                  <span className={printRecord.team === 'team_2' ? 'text-slate-950' : 'text-slate-600'}>
+                    {printRecord.team === 'team_2' ? '☑' : '☐'} ชุดปฏิบัติการที่ 2
+                  </span>
                 </div>
               </div>
 
-              <table className="w-full border-collapse border border-slate-400 text-[11px]">
+              <div className="grid grid-cols-1 sm:grid-cols-2 border border-slate-700 text-xs bg-white">
+                <div className="space-y-1 p-2.5 sm:border-r border-b sm:border-b-0 border-slate-700">
+                  <p>
+                    <span className="font-bold">ผู้ตรวจเช็คอุปกรณ์:</span> {printRecord.inspectorName}
+                  </p>
+                  <p>
+                    <span className="font-bold">ชุดปฏิบัติการ:</span> {printRecord.teamLabel}
+                  </p>
+                  <p>
+                    <span className="font-bold">วัน-เวลาบันทึก:</span> {printRecord.uploadTimestamp}
+                  </p>
+                </div>
+                <div className="space-y-1 p-2.5">
+                  <p>
+                    <span className="font-bold">รถปฏิบัติการประจำชุด:</span>{' '}
+                    {printRecord.vehicleCode
+                      ? `${printRecord.vehicleCode} (${printRecord.plateNumber || '-'})`
+                      : 'ตรวจประจำชุดปฏิบัติการ'}
+                  </p>
+                  <p>
+                    <span className="font-bold">รายการเกณฑ์บังคับครบ:</span>{' '}
+                    <span className="font-bold text-emerald-700">
+                      {printRecord.requiredPassedCount} / {printRecord.requiredTotalCount} รายการ
+                    </span>
+                  </p>
+                  <p>
+                    <span className="font-bold">รายการชำรุด / ไม่ครบ:</span>{' '}
+                    {(() => {
+                      const issueCount = printRecord.items.filter(
+                        (i) =>
+                          i.conditionStatus === 'damaged' ||
+                          (i.minCount !== null && i.availableQty < i.minCount)
+                      ).length;
+                      return (
+                        <span
+                          className={`font-bold ${
+                            issueCount > 0 ? 'text-red-700' : 'text-emerald-700'
+                          }`}
+                        >
+                          {issueCount} รายการ
+                        </span>
+                      );
+                    })()}
+                  </p>
+                </div>
+              </div>
+
+              <table className="w-full border-collapse border border-slate-700 text-xs">
                 <thead>
-                  <tr className="bg-slate-900 text-white">
-                    <th className="border border-slate-400 p-1.5 text-left">รายการอุปกรณ์</th>
-                    <th className="border border-slate-400 p-1.5 text-center w-24">จำนวนขั้นต่ำ</th>
-                    <th className="border border-slate-400 p-1.5 text-center w-24">จำนวนที่มี</th>
-                    <th className="border border-slate-400 p-1.5 text-left w-32">สภาพ / หมายเหตุ</th>
+                  <tr className="bg-slate-200 text-slate-950">
+                    <th className="border border-slate-700 p-1.5 text-left font-bold">รายการอุปกรณ์</th>
+                    <th className="border border-slate-700 p-1.5 text-center w-24 font-bold">จำนวนขั้นต่ำ</th>
+                    <th className="border border-slate-700 p-1.5 text-center w-24 font-bold">จำนวนที่มี</th>
+                    <th className="border border-slate-700 p-1.5 text-left w-36 font-bold">สภาพ / หมายเหตุ</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1378,8 +1674,8 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
                     if (!catItems.length) return null;
                     return (
                       <React.Fragment key={catId}>
-                        <tr className="bg-slate-200 font-bold">
-                          <td colSpan={4} className="border border-slate-400 px-2 py-1">
+                        <tr className="bg-slate-200 font-bold text-slate-950">
+                          <td colSpan={4} className="border border-slate-700 px-2.5 py-1.5">
                             {catItems[0].categoryTitle}
                           </td>
                         </tr>
@@ -1389,28 +1685,32 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
                           return (
                             <React.Fragment key={item.id}>
                               {showSub && (
-                                <tr className="bg-slate-50 font-bold">
-                                  <td colSpan={4} className="border border-slate-400 px-4 py-1">
+                                <tr className="bg-slate-50 font-bold text-slate-900">
+                                  <td colSpan={4} className="border border-slate-600 px-4 py-1">
                                     {item.subCategoryTitle}
                                   </td>
                                 </tr>
                               )}
                               <tr>
-                                <td className={`border border-slate-400 py-1 pr-2 ${item.subCategoryTitle ? 'pl-6' : 'pl-3'}`}>
+                                <td className={`border border-slate-600 py-1 pr-2 ${item.subCategoryTitle ? 'pl-6' : 'pl-3'}`}>
                                   <span className="font-semibold">{item.itemCode}</span> {item.name}
                                 </td>
-                                <td className="border border-slate-400 p-1 text-center">
+                                <td className="border border-slate-600 p-1 text-center whitespace-nowrap">
                                   {item.minRequirementLabel}
                                 </td>
-                                <td className="border border-slate-400 p-1 text-center font-bold">
+                                <td className="border border-slate-600 p-1 text-center font-bold whitespace-nowrap">
                                   {item.availableQty} {item.unit}
                                 </td>
-                                <td className="border border-slate-400 p-1">
-                                  {item.conditionStatus === 'damaged'
-                                    ? 'ชำรุด'
-                                    : item.conditionStatus === 'incomplete'
-                                    ? 'ไม่ครบ'
-                                    : 'ครบ/พร้อม'}
+                                <td className="border border-slate-600 p-1 font-semibold">
+                                  {item.conditionStatus === 'damaged' ? (
+                                    <span className="text-red-700">✗ ชำรุด</span>
+                                  ) : item.minCount !== null && item.availableQty < item.minCount ? (
+                                    <span className="text-amber-700">⚠ ไม่ครบเกณฑ์</span>
+                                  ) : item.minCount === null && item.availableQty === 0 ? (
+                                    <span className="text-slate-500">-</span>
+                                  ) : (
+                                    <span className="text-emerald-700">✓ ครบ/พร้อม</span>
+                                  )}
                                   {item.notes ? ` (${item.notes})` : ''}
                                 </td>
                               </tr>
@@ -1423,14 +1723,22 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
                 </tbody>
               </table>
 
-              <div className="grid grid-cols-2 gap-6 mt-6 text-xs text-center">
-                <div className="rounded-lg border border-dashed border-slate-300 p-3">
-                  <div className="h-8" />
+              {printRecord.summaryNotes && (
+                <div className="border border-slate-700 bg-slate-50 px-3 py-2 text-xs text-slate-900">
+                  <span className="font-bold">หมายเหตุเพิ่มเติม:</span> {printRecord.summaryNotes}
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-6 pt-6 text-xs sm:text-[13px] text-center text-slate-950">
+                <div className="p-3 leading-relaxed">
+                  <div className="h-9" />
                   <p>ลงชื่อ..........................................................ผู้ตรวจเช็ค</p>
                   <p className="font-bold mt-1">( {printRecord.inspectorName} )</p>
+                  <p className="text-[11px] text-slate-700">บันทึกเมื่อ: {printRecord.uploadTimestamp}</p>
+                  <p className="text-[11px] text-slate-700">วันที่............เดือน........................พ.ศ. ......................</p>
                 </div>
-                <div className="rounded-lg border border-dashed border-slate-300 p-3">
-                  <div className="h-8" />
+                <div className="p-3 leading-relaxed">
+                  <div className="h-9" />
                   <p>ผู้ตรวจสอบ.....................................................................</p>
                   <p className="font-bold mt-1">( นายวสันต์ วรรณเผือก )</p>
                   <p className="mt-0.5 text-[11px]">ตำแหน่ง เจ้าพนักงานป้องกันและบรรเทาสาธารณภัยปฏิบัติงาน</p>
@@ -1438,10 +1746,10 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
                 </div>
               </div>
 
-              <div className="mt-6 flex justify-center">
-                <div className="w-full max-w-sm rounded-lg border border-dashed border-slate-300 p-4 text-xs text-center">
+              <div className="mt-4 flex justify-center text-slate-950">
+                <div className="w-full max-w-md p-3 text-xs sm:text-[13px] text-center leading-relaxed">
                   <p className="font-bold">จึงเรียนมาเพื่อโปรดทราบ</p>
-                  <div className="h-8" />
+                  <div className="h-9" />
                   <p>ลงชื่อ.....................................................................</p>
                   <p className="font-bold mt-1 whitespace-pre">(        นายนิยม   สังข์เอียด        )</p>
                   <p className="mt-0.5 text-[11px]">นายกองค์การบริหารส่วนตำบลหงษ์เจริญ</p>

@@ -370,7 +370,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
           action: 'สร้างสเปรดชีตใหม่',
           module: 'ระบบภาพรวม',
           targetItem: res.spreadsheetId,
-          operator: `${currentUser.name} (${currentUser.role === 'admin' ? 'Admin' : 'Staff'})`,
+          operator: `${currentUser.name} (${currentUser.role === 'admin' ? 'Admin' : currentUser.role === 'executive' ? 'Executive' : 'Staff'})`,
           details: `สร้างชีตครบทั้ง 9 แท็บ: ตรวจสภาพรถ, ถ่ายสภาพรถ 4 ด้าน, กองรถ (${vehicles.length} คัน), เจ้าหน้าที่ (${staffList.length} คน), รอยรอบคัน (${currentDamage.length} จุด), น้ำมัน (${currentFuel.length} รายการ), ตรวจอุปกรณ์ BLS (${currentEquipment.length} รายการ), เบิกอุปกรณ์ (${currentRequisitions.length} ใบเบิก) และ Audit Log`,
         },
         token
@@ -484,7 +484,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
           action: 'ซิงค์ข้อมูลทั้งหมด',
           module: 'ระบบภาพรวม',
           targetItem: `สเปรดชีต ${cleanCurrentSheetId.slice(0, 10)}...`,
-          operator: `${currentUser.name} (${currentUser.role === 'admin' ? 'Admin' : 'Staff'})`,
+          operator: `${currentUser.name} (${currentUser.role === 'admin' ? 'Admin' : currentUser.role === 'executive' ? 'Executive' : 'Staff'})`,
           details: `ซิงค์ตรวจสภาพ ${count} รายการ, กองรถ ${vehicles.length} คัน, เจ้าหน้าที่ ${staffList.length} คน, รอยรอบคัน ${currentDamage.length} จุด, เติมน้ำมัน ${currentFuel.length} ครั้ง, อุปกรณ์ BLS ${currentEquipment.length} รายการ, เบิกอุปกรณ์ ${currentRequisitions.length} ใบเบิก`,
         },
         activeToken
@@ -561,7 +561,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
             action: 'ดึงข้อมูลคืน (Sync Back)',
             module: 'ระบบภาพรวม',
             targetItem: 'ฐานข้อมูลระบบส่วนกลาง',
-            operator: `${currentUser.name} (${currentUser.role === 'admin' ? 'Admin' : 'Staff'})`,
+            operator: `${currentUser.name} (${currentUser.role === 'admin' ? 'Admin' : currentUser.role === 'executive' ? 'Executive' : 'Staff'})`,
             details: `ดึงข้อมูลคืนจากชีต: ตรวจสภาพ ${pulled.inspections.length}, รถ ${pulled.vehicles.length} คัน, เจ้าหน้าที่ ${pulled.staffList.length} คน`,
           },
           activeToken

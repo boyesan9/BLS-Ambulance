@@ -87,6 +87,15 @@ export const DEFAULT_USER: UserProfile = {
 
 export const DEMO_USERS: Record<string, UserProfile> = {
   staff: DEFAULT_USER,
+  executive: {
+    ...DEFAULT_USER,
+    id: 'current-executive',
+    name: 'ผู้บริหาร (Executive)',
+    role: 'executive',
+    employeeId: 'EXE-001',
+    position: 'ผู้บริหาร / ผู้บังคับบัญชา',
+    department: 'ฝ่ายบริหาร',
+  },
   admin: {
     ...DEFAULT_USER,
     id: 'current-admin',
@@ -289,7 +298,13 @@ export function saveInspectionRecord(record: InspectionRecord): InspectionRecord
   const targetVeh = vehicles.find((v) => v.id === record.vehicleId);
   if (targetVeh) {
     targetVeh.lastInspectionDate = record.uploadTimestamp;
-    targetVeh.lastInspector = `${record.inspectorName} (${record.inspectorRole === 'admin' ? 'Admin' : 'Staff'})`;
+    const roleLabel =
+      record.inspectorRole === 'admin'
+        ? 'Admin'
+        : record.inspectorRole === 'executive'
+        ? 'Executive'
+        : 'Staff';
+    targetVeh.lastInspector = `${record.inspectorName} (${roleLabel})`;
     targetVeh.currentOdometer = record.odometerReading;
     if (record.overallStatus === 'needs_repair') {
       targetVeh.status = 'maintenance';

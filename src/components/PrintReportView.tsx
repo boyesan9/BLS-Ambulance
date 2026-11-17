@@ -1,26 +1,165 @@
 import React, { useState } from 'react';
-import { InspectionRecord } from '../types';
-import { Printer, X, ExternalLink, Shield, CheckCircle2, AlertTriangle, XCircle } from 'lucide-react';
-import { toDisplayableDriveImageUrl } from '../services/storage';
+import { InspectionRecord, UserProfile } from '../types';
+import { Printer, X, ExternalLink, FileDown } from 'lucide-react';
+import {
+  getDriveImageFallbackUrls,
+  getStoredStaff,
+  toDisplayableDriveImageUrl,
+} from '../services/storage';
+import { THAI_MONTHS } from '../data/equipmentChecklist';
 
 interface PrintReportViewProps {
   record: InspectionRecord;
+  staffList?: UserProfile[];
   onClose: () => void;
 }
 
-export const PrintReportView: React.FC<PrintReportViewProps> = ({ record, onClose }) => {
+function getThaiInspectionDateParts(
+  uploadTimestamp?: string,
+  createdAt?: number,
+  recordId?: string
+): {
+  day: string;
+  month: string;
+  year: string;
+} {
+  const raw = (uploadTimestamp || '').trim();
+
+  // 1) Match numeric DD/MM/YYYY or D/M/YYYY or DD-MM-YYYY
+  const numericMatch = raw.match(/(\d{1,2})[/-](\d{1,2})[/-](\d{4})/);
+  if (numericMatch) {
+    const dayNum = parseInt(numericMatch[1], 10);
+    const monthNum = parseInt(numericMatch[2], 10);
+    const yearNum = parseInt(numericMatch[3], 10);
+    if (dayNum >= 1 && dayNum <= 31 && monthNum >= 1 && monthNum <= 12 && yearNum > 0) {
+      return {
+        day: String(dayNum),
+        month: THAI_MONTHS[monthNum - 1],
+        year: String(yearNum < 2400 ? yearNum + 543 : yearNum),
+      };
+    }
+  }
+
+  // 2) Match Thai month name directly in uploadTimestamp
+  const foundMonthIdx = THAI_MONTHS.findIndex((m) => raw.includes(m));
+  if (foundMonthIdx !== -1) {
+    const dayMatch = raw.match(/(\d{1,2})\s/);
+    const yearMatch = raw.match(/(25\d{2}|20\d{2})/);
+    if (dayMatch && yearMatch) {
+      const yNum = parseInt(yearMatch[1], 10);
+      return {
+        day: String(parseInt(dayMatch[1], 10)),
+        month: THAI_MONTHS[foundMonthIdx],
+        year: String(yNum < 2400 ? yNum + 543 : yNum),
+      };
+    }
+  }
+
+  // 3) Fallback to createdAt or timestamp embedded in record.id
+  let ts = createdAt;
+  if (!ts && recordId) {
+    const idTsMatch = recordId.match(/(\d{13})/);
+    if (idTsMatch) ts = Number(idTsMatch[1]);
+  }
+  if (ts && !Number.isNaN(ts)) {
+    const dt = new Date(ts);
+    if (!Number.isNaN(dt.getTime())) {
+      return {
+        day: String(dt.getDate()),
+        month: THAI_MONTHS[dt.getMonth()] || THAI_MONTHS[0],
+        year: String(dt.getFullYear() + 543),
+      };
+    }
+  }
+
+  return {
+    day: '............',
+    month: '..................................',
+    year: '..................',
+  };
+}
+
+function escapeHtml(str: string): string {
+  return (str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+const ReportPhotoImg: React.FC<{
+  primary?: string;
+  driveUrl?: string;
+  alt: string;
+  className: string;
+}> = ({ primary, driveUrl, alt, className }) => {
+  const candidates = React.useMemo(() => {
+    const first = toDisplayableDriveImageUrl(primary, driveUrl) || primary || '';
+    const fallbacks = getDriveImageFallbackUrls(primary, driveUrl);
+    return Array.from(new Set([first, ...fallbacks].filter(Boolean)));
+  }, [primary, driveUrl]);
+
+  const [idx, setIdx] = useState(0);
+  const src = candidates[idx] || '';
+
+  if (!src) {
+    return (
+      <div className="flex h-52 sm:h-60 w-full items-center justify-center bg-slate-100 text-xs text-slate-400">
+        ไม่มีภาพ
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className={className}
+      referrerPolicy="no-referrer"
+      onError={() => {
+        if (idx + 1 < candidates.length) {
+          setIdx(idx + 1);
+        }
+      }}
+    />
+  );
+};
+
+export const PrintReportView: React.FC<PrintReportViewProps> = ({
+  record,
+  staffList,
+  onClose,
+}) => {
   const [printStatus, setPrintStatus] = useState<string | null>(null);
+  const inspectionDateParts = getThaiInspectionDateParts(
+    record.uploadTimestamp,
+    record.createdAt,
+    record.id
+  );
+  const availableStaff = staffList && staffList.length > 0 ? staffList : getStoredStaff();
+  const matchedInspector = availableStaff.find(
+    (s) => s.name.trim().toLowerCase() === (record.inspectorName || '').trim().toLowerCase()
+  );
+  const resolvedTeam = (record.inspectorDepartment || matchedInspector?.department || '').trim();
+  const isTeam1 = /ชุดปฏิบัติการที่\s*1/.test(resolvedTeam);
+  const isTeam2 = /ชุดปฏิบัติการที่\s*2/.test(resolvedTeam);
 
-  const categories = Array.from(new Set(record.vehicleChecklist.map((i) => i.categoryId))).map((catId) => {
-    const items = record.vehicleChecklist.filter((i) => i.categoryId === catId);
-    return {
-      id: catId,
-      title: items[0]?.categoryTitle || `หมวดที่ ${catId}`,
-      items,
-    };
-  });
+  const categories = Array.from(new Set(record.vehicleChecklist.map((i) => i.categoryId))).map(
+    (catId) => {
+      const items = record.vehicleChecklist.filter((i) => i.categoryId === catId);
+      return {
+        id: catId,
+        title: items[0]?.categoryTitle || `หมวดที่ ${catId}`,
+        items,
+      };
+    }
+  );
 
-  const generateReportHtml = () => {
+  const safePdfFilename = `ใบรายงานผลการตรวจสภาพรถ_${record.vehicleCode}_${record.plateNumber}`
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .trim();
+
+  const generateReportHtml = (showTopToolbar = false) => {
     const statusText =
       record.overallStatus === 'normal'
         ? 'พร้อมปฏิบัติการ (ปกติ)'
@@ -28,26 +167,82 @@ export const PrintReportView: React.FC<PrintReportViewProps> = ({ record, onClos
         ? 'พบข้อบกพร่อง (เฝ้าระวัง)'
         : 'งดใช้งาน (ส่งซ่อมบำรุง)';
 
+    const statusColor =
+      record.overallStatus === 'normal'
+        ? '#15803d'
+        : record.overallStatus === 'issue_found'
+        ? '#b45309'
+        : '#b91c1c';
+
+    const photoSides = [
+      {
+        label: 'ด้านหน้า (Front)',
+        primary: record.photos.front,
+        driveUrl: record.driveLinks?.frontPhotoUrl,
+      },
+      {
+        label: 'ด้านหลัง (Rear)',
+        primary: record.photos.rear,
+        driveUrl: record.driveLinks?.rearPhotoUrl,
+      },
+      {
+        label: 'ด้านซ้าย (Left Side)',
+        primary: record.photos.left,
+        driveUrl: record.driveLinks?.leftPhotoUrl,
+      },
+      {
+        label: 'ด้านขวา (Right Side)',
+        primary: record.photos.right,
+        driveUrl: record.driveLinks?.rightPhotoUrl,
+      },
+    ];
+
+    const photosHtml = photoSides
+      .map((side) => {
+        const first = toDisplayableDriveImageUrl(side.primary, side.driveUrl) || side.primary || '';
+        const fallbacks = getDriveImageFallbackUrls(side.primary, side.driveUrl);
+        const candidates = Array.from(new Set([first, ...fallbacks].filter(Boolean)));
+        const src = candidates[0] || '';
+        const fallbackJson = escapeHtml(JSON.stringify(candidates));
+        return `
+      <div class="photo-box">
+        ${
+          src
+            ? `<img src="${escapeHtml(src)}" alt="${escapeHtml(side.label)}" referrerpolicy="no-referrer" data-candidates="${fallbackJson}" data-idx="0" onerror="var list=JSON.parse(this.dataset.candidates||'[]');var i=parseInt(this.dataset.idx||'0',10)+1;if(i<list.length){this.dataset.idx=i;this.src=list[i];}" />`
+            : `<div class="photo-empty">ไม่มีภาพ</div>`
+        }
+        <div class="photo-label">${escapeHtml(side.label)}</div>
+      </div>`;
+      })
+      .join('');
+
     const rowsHtml = categories
       .map(
         (cat) => `
-        <tr style="background:#f1f5f9; font-weight:bold;">
-          <td colspan="4" style="padding:6px 10px; border:1px solid #cbd5e1; font-size:11px;">${cat.title}</td>
+        <tr class="cat-row">
+          <td colspan="4">${escapeHtml(cat.title)}</td>
         </tr>
         ${cat.items
           .map(
             (item, idx) => `
-          <tr>
-            <td style="padding:5px 8px; border:1px solid #cbd5e1; text-align:center; font-size:11px;">${cat.id}.${idx + 1}</td>
-            <td style="padding:5px 8px; border:1px solid #cbd5e1; font-size:11px;">
-              <strong>${item.subTitle}</strong> <span style="color:#64748b;">(เกณฑ์: ${item.standard})</span>
+          <tr class="item-row">
+            <td style="text-align:center;">${cat.id}.${idx + 1}</td>
+            <td>
+              <strong>${escapeHtml(item.subTitle)}</strong>
+              <span class="std-text">(เกณฑ์: ${escapeHtml(item.standard)})</span>
             </td>
-            <td style="padding:5px 8px; border:1px solid #cbd5e1; text-align:center; font-weight:bold; font-size:11px; color:${
-              item.status === 'pass' ? '#16a34a' : item.status === 'warning' ? '#d97706' : '#dc2626'
+            <td style="text-align:center; font-weight:700; color:${
+              item.status === 'pass' ? '#15803d' : item.status === 'warning' ? '#b45309' : '#b91c1c'
             };">
-              ${item.status === 'pass' ? '✓ พร้อมใช้งาน' : item.status === 'warning' ? '⚠ เฝ้าระวัง' : '✗ ชำรุด/ไม่ผ่าน'}
+              ${
+                item.status === 'pass'
+                  ? '✓ พร้อมใช้งาน'
+                  : item.status === 'warning'
+                  ? '⚠ เฝ้าระวัง'
+                  : '✗ ชำรุด/ไม่ผ่าน'
+              }
             </td>
-            <td style="padding:5px 8px; border:1px solid #cbd5e1; font-size:10px; color:#475569;">${item.issueNotes || '-'}</td>
+            <td style="color:#334155;">${escapeHtml(item.issueNotes || '-')}</td>
           </tr>
         `
           )
@@ -57,197 +252,400 @@ export const PrintReportView: React.FC<PrintReportViewProps> = ({ record, onClos
       .join('');
 
     return `<!DOCTYPE html>
-<html>
+<html lang="th">
 <head>
-  <title>ใบรายงานผลการตรวจสภาพรถ_${record.vehicleCode}_${record.plateNumber}</title>
+  <title>${escapeHtml(safePdfFilename)}</title>
   <meta charset="utf-8" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
-    @page { size: A4 portrait; margin: 10mm 12mm; }
-    * { box-sizing: border-box; }
+    @page {
+      size: A4 portrait;
+      margin: 12mm 14mm;
+    }
+    * {
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
     body {
-      font-family: 'Sarabun', 'Prompt', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      color: #0f172a;
-      background: #ffffff;
+      font-family: 'Sarabun', 'TH Sarabun New', 'TH SarabunPSK', sans-serif;
+      color: #000000;
+      background: ${showTopToolbar ? '#e2e8f0' : '#ffffff'};
       margin: 0;
-      padding: 16px;
+      padding: ${showTopToolbar ? '0 0 32px 0' : '0'};
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: #0f172a;
+      color: #ffffff;
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+    }
+    .toolbar-btn {
+      background: #0284c7;
+      color: #ffffff;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 16px;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .toolbar-btn:hover {
+      background: #0369a1;
+    }
+    .page-sheet {
+      background: #ffffff;
+      width: ${showTopToolbar ? '210mm' : '100%'};
+      margin: ${showTopToolbar ? '18px auto' : '0'};
+      padding: ${showTopToolbar ? '14mm 16mm' : '0'};
+      box-shadow: ${showTopToolbar ? '0 8px 28px rgba(15, 23, 42, 0.16)' : 'none'};
+    }
+    .doc-ref {
+      display: flex;
+      justify-content: flex-end;
       font-size: 11px;
-      line-height: 1.4;
+      color: #334155;
+      margin-bottom: 4px;
     }
     .header {
       text-align: center;
-      border-bottom: 2px solid #0284c7;
+      border-bottom: 3px double #0f172a;
       padding-bottom: 8px;
-      margin-bottom: 12px;
-    }
-    .title {
-      font-size: 15px;
-      font-weight: 700;
-      color: #0369a1;
-      margin: 0 0 2px 0;
-    }
-    .sub {
-      font-size: 10px;
-      color: #64748b;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
       margin-bottom: 10px;
     }
-    .card {
-      border: 1px solid #cbd5e1;
-      background: #f8fafc;
-      padding: 6px 10px;
-      border-radius: 6px;
+    .title {
+      font-size: 16px;
+      font-weight: 700;
+      color: #000000;
+      margin: 0;
     }
-    .card strong { color: #334155; }
-    table {
+    .org-title {
+      font-size: 14.5px;
+      font-weight: 700;
+      color: #000000;
+      margin-top: 2px;
+    }
+    .date-line {
+      font-size: 13px;
+      color: #0f172a;
+      margin-top: 4px;
+    }
+    .team-line {
+      font-size: 13px;
+      font-weight: 700;
+      color: #0f172a;
+      margin-top: 4px;
+    }
+    .meta-table {
       width: 100%;
       border-collapse: collapse;
       margin-bottom: 10px;
+      font-size: 12.5px;
+    }
+    .meta-table td {
+      border: 1px solid #334155;
+      padding: 5px 10px;
+      vertical-align: top;
+      background: #ffffff;
+    }
+    .section-heading {
+      font-size: 13px;
+      font-weight: 700;
+      color: #000000;
+      margin: 8px 0 5px 0;
+      border-left: 3px solid #0f172a;
+      padding-left: 7px;
     }
     .photos {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 6px;
-      margin-bottom: 10px;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      margin-bottom: 12px;
     }
     .photo-box {
-      border: 1px solid #cbd5e1;
-      background: #f8fafc;
-      padding: 3px;
+      border: 1px solid #334155;
+      background: #ffffff;
+      padding: 5px;
       text-align: center;
-      border-radius: 4px;
+      break-inside: avoid;
+      page-break-inside: avoid;
     }
     .photo-box img {
       width: 100%;
-      height: 85px;
+      height: 185px;
       object-fit: cover;
-      border-radius: 2px;
       display: block;
     }
+    .photo-empty {
+      width: 100%;
+      height: 185px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #f1f5f9;
+      color: #64748b;
+      font-size: 12px;
+    }
     .photo-label {
-      font-size: 9px;
-      font-weight: 600;
-      margin-top: 2px;
-      color: #334155;
+      font-size: 12px;
+      font-weight: 700;
+      margin-top: 4px;
+      color: #0f172a;
+    }
+    table.checklist {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 10px;
+      font-size: 12px;
+    }
+    table.checklist thead {
+      display: table-header-group;
+    }
+    table.checklist th {
+      background: #e2e8f0;
+      color: #000000;
+      border: 1px solid #334155;
+      padding: 6px 8px;
+      font-weight: 700;
+    }
+    table.checklist td {
+      border: 1px solid #475569;
+      padding: 4px 8px;
+      vertical-align: top;
+    }
+    tr.cat-row td {
+      background: #f1f5f9;
+      font-weight: 700;
+      color: #000000;
+      padding: 5px 8px;
+    }
+    tr.item-row {
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    .std-text {
+      color: #475569;
+      font-size: 11px;
+    }
+    .notes-box {
+      border: 1px solid #475569;
+      background: #f8fafc;
+      padding: 6px 10px;
+      margin-bottom: 10px;
+      font-size: 12px;
+      break-inside: avoid;
+    }
+    .signatures-wrapper {
+      break-inside: avoid;
+      page-break-inside: avoid;
+      margin-top: 14px;
     }
     .sign-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 20px;
-      margin-top: 14px;
+      gap: 24px;
     }
     .sign-box {
-      border: 1px dashed #94a3b8;
-      padding: 10px;
+      padding: 8px 6px;
       text-align: center;
-      border-radius: 6px;
+      font-size: 12.5px;
+      line-height: 1.55;
+    }
+    .sign-center {
+      margin-top: 14px;
+      display: flex;
+      justify-content: center;
+    }
+    .sign-center .sign-box {
+      width: 68%;
+      max-width: 390px;
     }
     @media print {
-      body { padding: 0; }
-      .no-print { display: none !important; }
+      body {
+        background: #ffffff;
+        padding: 0;
+      }
+      .no-print {
+        display: none !important;
+      }
+      .page-sheet {
+        width: 100%;
+        margin: 0;
+        padding: 0;
+        box-shadow: none;
+      }
     }
   </style>
 </head>
 <body>
-  <div class="header">
-    <div class="title">ใบรายงานผลการตรวจเช็คสภาพความพร้อมรถกู้ชีพส่วนกลาง (BLS Inspection Certificate)</div>
-    <div class="sub">ฝ่ายปฏิบัติการและการแพทย์ฉุกเฉินส่วนกลาง · ตรวจรับ-ส่งมอบรถประจำเวร 24 ชั่วโมง</div>
-  </div>
-
-  <div class="grid">
-    <div class="card">
-      <div><strong>รหัสรถ:</strong> <span style="font-weight:bold; color:#0284c7;">${record.vehicleCode}</span> · <strong>ทะเบียน:</strong> ${record.plateNumber}</div>
-      <div><strong>เลขไมล์ขณะตรวจ:</strong> ${record.odometerReading ? record.odometerReading.toLocaleString() : '-'} กม.</div>
-      <div><strong>สถานะความพร้อม:</strong> <span style="font-weight:bold; color:${record.overallStatus === 'normal' ? '#16a34a' : record.overallStatus === 'issue_found' ? '#d97706' : '#dc2626'};">${statusText}</span></div>
-    </div>
-    <div class="card">
-      <div><strong>ผู้ตรวจเช็ค:</strong> ${record.inspectorName} (${record.inspectorRole === 'admin' ? 'Admin' : 'พนักงานประจำเวร'})</div>
-      <div><strong>รอบเวร:</strong> ${record.shiftLabel}</div>
-      <div><strong>วัน-เวลาตรวจ:</strong> ${record.uploadTimestamp} (ID: ${record.id})</div>
-    </div>
-  </div>
-
-  <div style="font-weight:bold; margin-bottom:4px; font-size:10px; color:#475569;">
-    ภาพถ่ายสภาพตัวรถ 4 ด้าน (Timestamp Watermarked):
-  </div>
-  <div class="photos">
-    <div class="photo-box">
-      <img src="${toDisplayableDriveImageUrl(record.photos.front, record.driveLinks?.frontPhotoUrl) || record.photos.front || ''}" alt="ด้านหน้า" />
-      <div class="photo-label">ด้านหน้า (Front)</div>
-    </div>
-    <div class="photo-box">
-      <img src="${toDisplayableDriveImageUrl(record.photos.rear, record.driveLinks?.rearPhotoUrl) || record.photos.rear || ''}" alt="ด้านหลัง" />
-      <div class="photo-label">ด้านหลัง (Rear)</div>
-    </div>
-    <div class="photo-box">
-      <img src="${toDisplayableDriveImageUrl(record.photos.left, record.driveLinks?.leftPhotoUrl) || record.photos.left || ''}" alt="ด้านซ้าย" />
-      <div class="photo-label">ด้านซ้าย (Left Side)</div>
-    </div>
-    <div class="photo-box">
-      <img src="${toDisplayableDriveImageUrl(record.photos.right, record.driveLinks?.rightPhotoUrl) || record.photos.right || ''}" alt="ด้านขวา" />
-      <div class="photo-label">ด้านขวา (Right Side)</div>
-    </div>
-  </div>
-
-  <div style="font-weight:bold; margin-bottom:4px; font-size:10px; color:#475569;">
-    รายการตรวจเช็คสภาพตัวรถ 7 หมวด 22 รายการ:
-  </div>
-  <table>
-    <thead>
-      <tr style="background:#0f172a; color:#ffffff;">
-        <th style="padding:6px; border:1px solid #cbd5e1; width:7%; text-align:center;">ลำดับ</th>
-        <th style="padding:6px; border:1px solid #cbd5e1; width:53%; text-align:left;">รายการตรวจเช็ค / เกณฑ์มาตรฐาน</th>
-        <th style="padding:6px; border:1px solid #cbd5e1; width:18%; text-align:center;">ผลตรวจ</th>
-        <th style="padding:6px; border:1px solid #cbd5e1; width:22%; text-align:left;">ปัญหาที่พบ / หมายเหตุ</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${rowsHtml}
-    </tbody>
-  </table>
-
   ${
-    record.summaryNotes
-      ? `<div style="margin-bottom:8px; padding:6px 10px; background:#f8fafc; border:1px solid #cbd5e1; border-radius:4px; font-size:10px;">
-          <strong>หมายเหตุสรุปจากผู้ตรวจ:</strong> ${record.summaryNotes}
-         </div>`
+    showTopToolbar
+      ? `<div class="toolbar no-print">
+          <div>
+            <strong>ใบรายงานผลการตรวจสภาพรถกู้ชีพ BLS</strong>
+            <span style="font-size:12px; color:#cbd5e1; margin-left:8px;">(${escapeHtml(record.vehicleCode)} · ${escapeHtml(record.plateNumber)})</span>
+          </div>
+          <button type="button" class="toolbar-btn" onclick="window.print()">พิมพ์ / บันทึกเป็น .PDF (A4)</button>
+        </div>`
       : ''
   }
-
-  ${
-    record.documentAttachment
-      ? `<div style="margin-bottom:8px; padding:4px 8px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:4px; font-size:10px; color:#166534;">
-          <strong>เอกสารแนบ:</strong> ${record.documentAttachment.name} (${record.documentAttachment.type.toUpperCase()})
-         </div>`
-      : ''
-  }
-
-  <div class="sign-grid">
-    <div class="sign-box">
-      <div style="height:25px;"></div>
-      <div>ลงชื่อ..............................................................</div>
-      <div style="margin-top:4px; font-weight:600;">( ${record.inspectorName} )</div>
-      <div style="font-size:9px; color:#64748b;">เจ้าหน้าที่ผู้ตรวจเช็คสภาพรถ</div>
+  <div class="page-sheet">
+    <div class="doc-ref">
+      <span>เลขที่อ้างอิง: ${escapeHtml(record.id)}</span>
     </div>
-    <div class="sign-box">
-      <div style="height:25px;"></div>
-      <div>ลงชื่อ..............................................................</div>
-      <div style="margin-top:4px; font-weight:600;">( .............................................................. )</div>
-      <div style="font-size:9px; color:#64748b;">หัวหน้างาน/ผู้ดูแลระบบยานพาหนะส่วนกลาง</div>
+
+    <div class="header">
+      <div class="title">ตรวจความพร้อมอุปกรณ์สำหรับหน่วยปฏิบัติการแพทย์ระดับพื้นฐาน</div>
+      <div class="org-title">กู้ชีพ อบต.หงษ์เจริญ</div>
+      <div class="date-line">ประจำวันที่ <strong>${escapeHtml(inspectionDateParts.day)}</strong> เดือน <strong>${escapeHtml(inspectionDateParts.month)}</strong> พ.ศ. <strong>${escapeHtml(inspectionDateParts.year)}</strong></div>
+      <div class="team-line">${isTeam1 ? '☑' : '☐'} ชุดปฏิบัติการที่ 1 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${isTeam2 ? '☑' : '☐'} ชุดปฏิบัติการที่ 2</div>
+    </div>
+
+    <table class="meta-table">
+      <tbody>
+        <tr>
+          <td style="width:50%;">
+            <div><strong>รหัสรถปฏิบัติการ:</strong> ${escapeHtml(record.vehicleCode)} &nbsp;|&nbsp; <strong>ทะเบียน:</strong> ${escapeHtml(record.plateNumber)}</div>
+            <div><strong>เลขไมล์ขณะตรวจ:</strong> ${record.odometerReading ? record.odometerReading.toLocaleString() : '-'} กิโลเมตร</div>
+            <div><strong>ผลการประเมินภาพรวม:</strong> <strong style="color:${statusColor};">${statusText}</strong></div>
+          </td>
+          <td style="width:50%;">
+            <div><strong>ผู้ตรวจเช็ค:</strong> ${escapeHtml(record.inspectorName)}${resolvedTeam ? ` (${escapeHtml(resolvedTeam)})` : ''}</div>
+            <div><strong>รอบเวรปฏิบัติการ:</strong> ${escapeHtml(record.shiftLabel)}</div>
+            <div><strong>วัน-เวลาบันทึกผล:</strong> ${escapeHtml(record.uploadTimestamp)}</div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="section-heading">ส่วนที่ 1 ภาพถ่ายสภาพตัวรถกู้ชีพ 4 ด้าน (บันทึกวัน-เวลาตรวจจริง)</div>
+    <div class="photos">
+      ${photosHtml}
+    </div>
+
+    <div class="section-heading">ส่วนที่ 2 รายการตรวจเช็คสภาพความพร้อมรถยนต์ (7 หมวด 22 รายการ)</div>
+    <table class="checklist">
+      <thead>
+        <tr>
+          <th style="width:8%; text-align:center;">ลำดับ</th>
+          <th style="width:52%; text-align:left;">รายการตรวจเช็ค / เกณฑ์มาตรฐาน</th>
+          <th style="width:18%; text-align:center;">ผลการตรวจ</th>
+          <th style="width:22%; text-align:left;">ปัญหาที่พบ / หมายเหตุ</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rowsHtml}
+      </tbody>
+    </table>
+
+    ${
+      record.summaryNotes
+        ? `<div class="notes-box"><strong>หมายเหตุเพิ่มเติมจากผู้ตรวจ:</strong> ${escapeHtml(record.summaryNotes)}</div>`
+        : ''
+    }
+
+    ${
+      record.documentAttachment
+        ? `<div class="notes-box"><strong>เอกสารแนบประกอบการตรวจ:</strong> ${escapeHtml(record.documentAttachment.name)} (${escapeHtml(record.documentAttachment.type.toUpperCase())})</div>`
+        : ''
+    }
+
+    <div class="signatures-wrapper">
+      <div class="sign-grid">
+        <div class="sign-box">
+          <div style="height:28px;"></div>
+          <div>ลงชื่อ.....................................................................</div>
+          <div style="font-weight:700;">( ${escapeHtml(record.inspectorName)} )</div>
+          <div>เจ้าหน้าที่ผู้ตรวจเช็คสภาพรถ</div>
+          <div>วันที่............เดือน........................พ.ศ. ......................</div>
+        </div>
+        <div class="sign-box">
+          <div style="height:28px;"></div>
+          <div>ผู้ตรวจสอบ.....................................................................</div>
+          <div style="font-weight:700;">( นายวสันต์ วรรณเผือก )</div>
+          <div>ตำแหน่ง เจ้าพนักงานป้องกันและบรรเทาสาธารณภัยปฏิบัติงาน</div>
+          <div>วันที่............เดือน........................พ.ศ. ......................</div>
+        </div>
+      </div>
+
+      <div class="sign-center">
+        <div class="sign-box">
+          <div style="font-weight:700;">จึงเรียนมาเพื่อโปรดทราบ</div>
+          <div style="height:28px;"></div>
+          <div>ลงชื่อ.....................................................................</div>
+          <div style="font-weight:700; white-space:pre;">(        นายนิยม   สังข์เอียด        )</div>
+          <div>นายกองค์การบริหารส่วนตำบลหงษ์เจริญ</div>
+          <div>วันที่............เดือน........................พ.ศ. .......................</div>
+        </div>
+      </div>
     </div>
   </div>
 </body>
 </html>`;
   };
 
-  // Primary: Hidden iframe print (100% reliable in sandboxed iframes)
-  const handlePrintViaIframe = () => {
+  // Wait for fonts and images in a document before triggering browser Save-as-PDF / Print dialog
+  const waitAndTriggerPrint = async (
+    targetWindow: Window,
+    targetDoc: Document,
+    onDone?: () => void
+  ) => {
+    const previousTitle = document.title;
     try {
-      setPrintStatus('กำลังเตรียมเอกสารสั่งพิมพ์...');
-      const htmlContent = generateReportHtml();
+      document.title = safePdfFilename;
+      if ((targetDoc as any).fonts?.ready) {
+        await Promise.race([
+          (targetDoc as any).fonts.ready,
+          new Promise((res) => setTimeout(res, 1500)),
+        ]);
+      }
+
+      const imgs = Array.from(targetDoc.querySelectorAll('img'));
+      if (imgs.length > 0) {
+        await Promise.race([
+          Promise.all(
+            imgs.map(
+              (img) =>
+                new Promise<void>((resolve) => {
+                  if (img.complete) return resolve();
+                  img.addEventListener('load', () => resolve(), { once: true });
+                  img.addEventListener('error', () => resolve(), { once: true });
+                })
+            )
+          ),
+          new Promise((res) => setTimeout(res, 2500)),
+        ]);
+      }
+
+      targetWindow.focus();
+      targetWindow.print();
+      setPrintStatus('เปิดหน้าต่างบันทึกเป็น .PDF / สั่งพิมพ์แล้ว');
+    } catch (err) {
+      console.warn('Print trigger fallback:', err);
+      window.print();
+    } finally {
+      document.title = previousTitle;
+      if (onDone) onDone();
+    }
+  };
+
+  // Primary: Hidden iframe print-to-PDF (works reliably inside iframes & sets clean PDF filename)
+  const handlePrintToPdf = () => {
+    try {
+      setPrintStatus('กำลังจัดรูปแบบเอกสาร A4 และโหลดฟอนต์ราชการ...');
+      const htmlContent = generateReportHtml(false);
 
       const printFrame = document.createElement('iframe');
       printFrame.setAttribute(
@@ -257,51 +655,45 @@ export const PrintReportView: React.FC<PrintReportViewProps> = ({ record, onClos
       document.body.appendChild(printFrame);
 
       const frameDoc = printFrame.contentDocument || printFrame.contentWindow?.document;
-      if (frameDoc) {
+      if (frameDoc && printFrame.contentWindow) {
         frameDoc.open();
         frameDoc.write(htmlContent);
         frameDoc.close();
 
-        // Allow images to load in the hidden iframe
         setTimeout(() => {
-          try {
-            printFrame.contentWindow?.focus();
-            printFrame.contentWindow?.print();
-            setPrintStatus('เปิดหน้าต่างสั่งพิมพ์แล้ว');
-          } catch (printErr) {
-            console.warn('Iframe print error:', printErr);
-            // Fallback to window.print
-            window.print();
-          } finally {
+          waitAndTriggerPrint(printFrame.contentWindow!, frameDoc, () => {
             setTimeout(() => {
               if (document.body.contains(printFrame)) {
                 document.body.removeChild(printFrame);
               }
               setPrintStatus(null);
-            }, 3000);
-          }
-        }, 500);
+            }, 2500);
+          });
+        }, 350);
+      } else {
+        setPrintStatus(null);
       }
-    } catch (e: any) {
-      console.error('Print failure:', e);
+    } catch (e) {
+      console.error('PDF Print failure:', e);
+      setPrintStatus(null);
       window.print();
     }
   };
 
-  // Secondary: Standalone Window (if user prefers open in new tab)
+  // Secondary: Open formatted A4 official sheet in new tab with dedicated PDF print button
   const handleOpenStandaloneTab = () => {
     try {
-      const htmlContent = generateReportHtml();
+      const htmlContent = generateReportHtml(true);
       const printWindow = window.open('', '_blank');
       if (printWindow) {
         printWindow.document.open();
         printWindow.document.write(htmlContent);
         printWindow.document.close();
       } else {
-        handlePrintViaIframe();
+        handlePrintToPdf();
       }
-    } catch (e) {
-      handlePrintViaIframe();
+    } catch {
+      handlePrintToPdf();
     }
   };
 
@@ -312,14 +704,14 @@ export const PrintReportView: React.FC<PrintReportViewProps> = ({ record, onClos
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-6 py-4 bg-slate-50 dark:border-slate-800 dark:bg-slate-850">
           <div className="flex items-center gap-2.5">
             <div className="rounded-lg bg-sky-100 p-2 text-sky-700 dark:bg-sky-950 dark:text-sky-300">
-              <Printer className="h-5 w-5" />
+              <FileDown className="h-5 w-5" />
             </div>
             <div>
               <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                พิมพ์ใบรายงานผลการตรวจสภาพรถกู้ชีพ BLS
+                พิมพ์ / บันทึกเป็น .PDF ใบรายงานผลการตรวจสภาพรถกู้ชีพ BLS (รูปแบบราชการ)
               </h3>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                รถ {record.vehicleCode} ({record.plateNumber}) · ตรวจวันที่ {record.uploadTimestamp}
+                รถ {record.vehicleCode} ({record.plateNumber}) · เลือกปลายทางเป็น &ldquo;บันทึกเป็น PDF (Save as PDF)&rdquo; ขนาด A4
               </p>
             </div>
           </div>
@@ -333,22 +725,22 @@ export const PrintReportView: React.FC<PrintReportViewProps> = ({ record, onClos
 
             <button
               type="button"
-              onClick={handlePrintViaIframe}
+              onClick={handlePrintToPdf}
               className="inline-flex items-center gap-1.5 rounded-xl bg-sky-600 px-3.5 py-2 text-xs font-bold text-white shadow-sm hover:bg-sky-500 active:scale-95 transition-all"
-              title="สั่งพิมพ์โดยตรงผ่านระบบพิมพ์ของเครื่อง"
+              title="พิมพ์หรือบันทึกเป็นไฟล์ .PDF ขนาด A4 รูปแบบราชการ"
             >
               <Printer className="h-4 w-4" />
-              <span>สั่งพิมพ์ทันที</span>
+              <span>พิมพ์ / บันทึกเป็น .PDF</span>
             </button>
 
             <button
               type="button"
               onClick={handleOpenStandaloneTab}
               className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-              title="เปิดในแท็บใหม่เพื่อดูตัวอย่างก่อนพิมพ์"
+              title="เปิดหน้ากระดาษ A4 เต็มหน้าในแท็บใหม่เพื่อดูตัวอย่างก่อนบันทึก PDF"
             >
               <ExternalLink className="h-3.5 w-3.5" />
-              <span>เปิดในแท็บใหม่</span>
+              <span>เปิดหน้ากระดาษ A4</span>
             </button>
 
             <button
@@ -361,146 +753,171 @@ export const PrintReportView: React.FC<PrintReportViewProps> = ({ record, onClos
           </div>
         </div>
 
-        {/* Printable Certificate Preview Sheet */}
-        <div className="max-h-[80vh] overflow-y-auto p-8 space-y-6 bg-white text-slate-900">
-          {/* Certificate Header */}
-          <div className="border-b-2 border-sky-600 pb-4 text-center">
-            <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-xl bg-sky-100 text-sky-700">
-              <Shield className="h-6 w-6" />
-            </div>
-            <h2 className="text-lg font-bold text-slate-900">
-              ใบรายงานผลการตรวจเช็คสภาพความพร้อมรถกู้ชีพฉุกเฉิน (BLS)
+        {/* Printable Official A4 Preview Sheet (Sarabun Government Style) */}
+        <div
+          className="max-h-[80vh] overflow-y-auto p-6 sm:p-10 space-y-5 bg-white text-slate-950"
+          style={{ fontFamily: "'Sarabun', 'Prompt', sans-serif" }}
+        >
+          {/* Formal Government Header (keeps div:nth-of-type(1) and children structure intact) */}
+          <div className="border-b-[3px] border-double border-slate-900 pb-4 text-center">
+            <h2 className="text-base sm:text-lg font-bold text-slate-950">
+              ตรวจความพร้อมอุปกรณ์สำหรับหน่วยปฏิบัติการแพทย์ระดับพื้นฐาน
             </h2>
-            <p className="text-xs text-slate-500">
-              ฝ่ายปฏิบัติการและการแพทย์ฉุกเฉินส่วนกลาง · บันทึกตรวจรับสภาพประจำเวร
+            <p className="mt-0.5 text-sm sm:text-base font-bold text-slate-950">
+              กู้ชีพ อบต.หงษ์เจริญ
             </p>
+            <p className="mt-1 text-xs sm:text-sm text-slate-900">
+              ประจำวันที่ <span className="font-bold underline px-1">{inspectionDateParts.day}</span>{' '}
+              เดือน <span className="font-bold underline px-1">{inspectionDateParts.month}</span>{' '}
+              พ.ศ. <span className="font-bold underline px-1">{inspectionDateParts.year}</span>
+            </p>
+            <div className="mt-1.5 flex items-center justify-center gap-6 text-xs sm:text-sm font-bold text-slate-900">
+              <span className={isTeam1 ? 'font-bold text-slate-950' : 'text-slate-600'}>
+                {isTeam1 ? '☑' : '☐'} ชุดปฏิบัติการที่ 1
+              </span>
+              <span className={isTeam2 ? 'font-bold text-slate-950' : 'text-slate-600'}>
+                {isTeam2 ? '☑' : '☐'} ชุดปฏิบัติการที่ 2
+              </span>
+            </div>
           </div>
 
-          {/* Metadata Grid */}
-          <div className="grid grid-cols-2 gap-4 rounded-xl border border-slate-200 bg-slate-50/60 p-4 text-xs">
-            <div className="space-y-1">
+          {/* Formal Metadata Table (2 Columns, crisp black border) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 border border-slate-700 text-xs sm:text-[13px] bg-white">
+            <div className="space-y-1 p-3 sm:border-r border-b sm:border-b-0 border-slate-700">
               <p>
-                <span className="font-semibold text-slate-600">รหัสรถ:</span>{' '}
-                <span className="font-mono font-bold text-sky-700">{record.vehicleCode}</span> ·{' '}
-                <span className="font-semibold text-slate-600">ทะเบียน:</span> {record.plateNumber}
+                <span className="font-bold text-slate-900">รหัสรถปฏิบัติการ:</span>{' '}
+                <span className="font-bold">{record.vehicleCode}</span> ·{' '}
+                <span className="font-bold text-slate-900">ทะเบียน:</span> {record.plateNumber}
               </p>
               <p>
-                <span className="font-semibold text-slate-600">เลขไมล์ตรวจ:</span>{' '}
-                <span className="font-mono tabular-nums">{record.odometerReading?.toLocaleString() || '-'}</span> กม.
+                <span className="font-bold text-slate-900">เลขไมล์ขณะตรวจ:</span>{' '}
+                <span className="tabular-nums">{record.odometerReading?.toLocaleString() || '-'}</span> กิโลเมตร
               </p>
               <p>
-                <span className="font-semibold text-slate-600">สถานะความพร้อม:</span>{' '}
-                <span className="font-bold text-emerald-700">
+                <span className="font-bold text-slate-900">ผลการประเมินภาพรวม:</span>{' '}
+                <span
+                  className={`font-bold ${
+                    record.overallStatus === 'normal'
+                      ? 'text-emerald-700'
+                      : record.overallStatus === 'issue_found'
+                      ? 'text-amber-700'
+                      : 'text-red-700'
+                  }`}
+                >
                   {record.overallStatus === 'normal'
                     ? 'พร้อมปฏิบัติการ (ปกติ)'
                     : record.overallStatus === 'issue_found'
                     ? 'พบข้อบกพร่อง (เฝ้าระวัง)'
-                    : 'งดใช้งาน (ส่งซ่อม)'}
+                    : 'งดใช้งาน (ส่งซ่อมบำรุง)'}
                 </span>
               </p>
             </div>
 
-            <div className="space-y-1">
+            <div className="space-y-1 p-3">
               <p>
-                <span className="font-semibold text-slate-600">ผู้ตรวจเช็ค:</span> {record.inspectorName}{' '}
-                ({record.inspectorRole === 'admin' ? 'Admin' : 'พนักงานประจำเวร'})
+                <span className="font-bold text-slate-900">ผู้ตรวจเช็ค:</span> {record.inspectorName}
+                {resolvedTeam ? ` (${resolvedTeam})` : ''}
               </p>
               <p>
-                <span className="font-semibold text-slate-600">รอบเวร:</span> {record.shiftLabel}
+                <span className="font-bold text-slate-900">รอบเวรปฏิบัติการ:</span> {record.shiftLabel}
               </p>
               <p>
-                <span className="font-semibold text-slate-600">วัน-เวลาตรวจ:</span>{' '}
-                <span className="font-mono tabular-nums">{record.uploadTimestamp}</span>
+                <span className="font-bold text-slate-900">วัน-เวลาตรวจ:</span>{' '}
+                <span className="tabular-nums">{record.uploadTimestamp}</span>
               </p>
             </div>
           </div>
 
-          {/* 4-Side Photos Grid */}
+          {/* 4-Side Photos Grid (2 rows x 2 columns) */}
           <div>
-            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 mb-2">
-              ภาพถ่ายสภาพรถ 4 ด้าน (Timestamp Watermarked)
+            <h4 className="border-l-4 border-slate-900 pl-2 text-xs sm:text-sm font-bold text-slate-950 mb-2">
+              ส่วนที่ 1 ภาพถ่ายสภาพตัวรถกู้ชีพ 4 ด้าน (บันทึกวัน-เวลาตรวจจริง)
             </h4>
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 gap-3">
               {[
                 {
                   label: 'ด้านหน้า (Front)',
-                  url: toDisplayableDriveImageUrl(record.photos.front, record.driveLinks?.frontPhotoUrl) || record.photos.front,
+                  primary: record.photos.front,
+                  driveUrl: record.driveLinks?.frontPhotoUrl,
                 },
                 {
                   label: 'ด้านหลัง (Rear)',
-                  url: toDisplayableDriveImageUrl(record.photos.rear, record.driveLinks?.rearPhotoUrl) || record.photos.rear,
+                  primary: record.photos.rear,
+                  driveUrl: record.driveLinks?.rearPhotoUrl,
                 },
                 {
-                  label: 'ด้านซ้าย (Left)',
-                  url: toDisplayableDriveImageUrl(record.photos.left, record.driveLinks?.leftPhotoUrl) || record.photos.left,
+                  label: 'ด้านซ้าย (Left Side)',
+                  primary: record.photos.left,
+                  driveUrl: record.driveLinks?.leftPhotoUrl,
                 },
                 {
-                  label: 'ด้านขวา (Right)',
-                  url: toDisplayableDriveImageUrl(record.photos.right, record.driveLinks?.rightPhotoUrl) || record.photos.right,
+                  label: 'ด้านขวา (Right Side)',
+                  primary: record.photos.right,
+                  driveUrl: record.driveLinks?.rightPhotoUrl,
                 },
               ].map((p, idx) => (
-                <div key={idx} className="rounded-lg border border-slate-200 p-1 text-center bg-slate-50">
-                  {p.url ? (
-                    <img
-                      src={p.url}
-                      alt={p.label}
-                      className="h-24 w-full rounded object-cover"
-                      referrerPolicy="no-referrer"
-                    />
-                  ) : (
-                    <div className="flex h-24 w-full items-center justify-center rounded bg-slate-100 text-[10px] text-slate-400">
-                      ไม่มีภาพ
-                    </div>
-                  )}
-                  <span className="mt-1 block text-[10px] font-bold text-slate-700">{p.label}</span>
+                <div key={idx} className="border border-slate-700 p-2 text-center bg-white">
+                  <ReportPhotoImg
+                    primary={p.primary}
+                    driveUrl={p.driveUrl}
+                    alt={p.label}
+                    className="h-52 sm:h-60 w-full object-cover"
+                  />
+                  <span className="mt-1.5 block text-xs font-bold text-slate-900">{p.label}</span>
                 </div>
               ))}
             </div>
           </div>
 
-          {/* 7-Category Checklist Table */}
+          {/* 7-Category Checklist Table (Formal Official Styling) */}
           <div>
-            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 mb-2">
-              ผลการตรวจสภาพตัวรถ 7 หมวด 22 รายการ
+            <h4 className="border-l-4 border-slate-900 pl-2 text-xs sm:text-sm font-bold text-slate-950 mb-2">
+              ส่วนที่ 2 รายการตรวจเช็คสภาพความพร้อมรถยนต์ (7 หมวด 22 รายการ)
             </h4>
-            <table className="w-full border-collapse border border-slate-200 text-xs">
+            <table className="w-full border-collapse border border-slate-700 text-xs">
               <thead>
-                <tr className="bg-slate-900 text-white">
-                  <th className="border border-slate-200 p-2 text-center w-12">ลำดับ</th>
-                  <th className="border border-slate-200 p-2 text-left">รายการตรวจเช็ค / เกณฑ์มาตรฐาน</th>
-                  <th className="border border-slate-200 p-2 text-center w-28">ผลตรวจ</th>
-                  <th className="border border-slate-200 p-2 text-left w-48">ปัญหาที่พบ / หมายเหตุ</th>
+                <tr className="bg-slate-200 text-slate-950">
+                  <th className="border border-slate-700 p-2 text-center w-12 font-bold">ลำดับ</th>
+                  <th className="border border-slate-700 p-2 text-left font-bold">
+                    รายการตรวจเช็ค / เกณฑ์มาตรฐาน
+                  </th>
+                  <th className="border border-slate-700 p-2 text-center w-28 font-bold">ผลการตรวจ</th>
+                  <th className="border border-slate-700 p-2 text-left w-48 font-bold">
+                    ปัญหาที่พบ / หมายเหตุ
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {categories.map((cat, cIdx) => (
                   <React.Fragment key={cat.id}>
                     <tr className="bg-slate-100 font-bold">
-                      <td colSpan={4} className="border border-slate-200 px-3 py-1.5 text-slate-800">
+                      <td colSpan={4} className="border border-slate-700 px-3 py-1.5 text-slate-950">
                         {cat.title}
                       </td>
                     </tr>
                     {cat.items.map((item, iIdx) => (
-                      <tr key={item.id} className="border-b border-slate-100">
-                        <td className="border border-slate-200 p-2 text-center font-mono text-[11px]">
+                      <tr key={item.id}>
+                        <td className="border border-slate-600 p-2 text-center tabular-nums text-[11px]">
                           {cIdx + 1}.{iIdx + 1}
                         </td>
-                        <td className="border border-slate-200 p-2">
-                          <span className="font-semibold">{item.subTitle}</span>{' '}
-                          <span className="text-[11px] text-slate-500">(เกณฑ์: {item.standard})</span>
+                        <td className="border border-slate-600 p-2">
+                          <span className="font-semibold text-slate-950">{item.subTitle}</span>{' '}
+                          <span className="text-[11px] text-slate-600">
+                            (เกณฑ์: {item.standard})
+                          </span>
                         </td>
-                        <td className="border border-slate-200 p-2 text-center">
+                        <td className="border border-slate-600 p-2 text-center">
                           {item.status === 'pass' && (
-                            <span className="font-bold text-emerald-600">✓ พร้อมใช้งาน</span>
+                            <span className="font-bold text-emerald-700">✓ พร้อมใช้งาน</span>
                           )}
                           {item.status === 'warning' && (
-                            <span className="font-bold text-amber-600">⚠ เฝ้าระวัง</span>
+                            <span className="font-bold text-amber-700">⚠ เฝ้าระวัง</span>
                           )}
                           {item.status === 'fail' && (
-                            <span className="font-bold text-red-600">✗ ชำรุด</span>
+                            <span className="font-bold text-red-700">✗ ชำรุด</span>
                           )}
                         </td>
-                        <td className="border border-slate-200 p-2 text-[11px] text-slate-600">
+                        <td className="border border-slate-600 p-2 text-[11px] text-slate-800">
                           {item.issueNotes || '-'}
                         </td>
                       </tr>
@@ -511,20 +928,46 @@ export const PrintReportView: React.FC<PrintReportViewProps> = ({ record, onClos
             </table>
           </div>
 
-          {/* Signatures */}
-          <div className="grid grid-cols-2 gap-8 pt-6">
-            <div className="rounded-xl border border-dashed border-slate-300 p-4 text-center">
+          {record.summaryNotes && (
+            <div className="border border-slate-700 bg-slate-50 px-3 py-2 text-xs text-slate-900">
+              <span className="font-bold">หมายเหตุเพิ่มเติมจากผู้ตรวจ:</span> {record.summaryNotes}
+            </div>
+          )}
+
+          {record.documentAttachment && (
+            <div className="border border-slate-700 bg-slate-50 px-3 py-2 text-xs text-slate-900">
+              <span className="font-bold">เอกสารแนบประกอบการตรวจ:</span>{' '}
+              {record.documentAttachment.name} ({record.documentAttachment.type.toUpperCase()})
+            </div>
+          )}
+
+          {/* Formal Thai Government Signatures (Clean, no dashed borders) */}
+          <div className="grid grid-cols-2 gap-8 pt-6 text-slate-950">
+            <div className="p-3 text-center text-xs sm:text-[13px] leading-relaxed">
               <div className="h-10" />
-              <p className="text-xs">ลงชื่อ..............................................................</p>
-              <p className="mt-1 font-semibold text-xs">( {record.inspectorName} )</p>
-              <p className="text-[11px] text-slate-400">เจ้าหน้าที่ผู้ตรวจเช็คสภาพรถ</p>
+              <p>ลงชื่อ.....................................................................</p>
+              <p className="mt-1 font-bold">( {record.inspectorName} )</p>
+              <p>เจ้าหน้าที่ผู้ตรวจเช็คสภาพรถ</p>
+              <p>วันที่............เดือน........................พ.ศ. ......................</p>
             </div>
 
-            <div className="rounded-xl border border-dashed border-slate-300 p-4 text-center">
+            <div className="p-3 text-center text-xs sm:text-[13px] leading-relaxed">
               <div className="h-10" />
-              <p className="text-xs">ลงชื่อ..............................................................</p>
-              <p className="mt-1 font-semibold text-xs">( .............................................................. )</p>
-              <p className="text-[11px] text-slate-400">ผู้ดูแลระบบ/หัวหน้างานยานพาหนะ</p>
+              <p>ผู้ตรวจสอบ.....................................................................</p>
+              <p className="mt-1 font-bold">( นายวสันต์ วรรณเผือก )</p>
+              <p>ตำแหน่ง เจ้าพนักงานป้องกันและบรรเทาสาธารณภัยปฏิบัติงาน</p>
+              <p>วันที่............เดือน........................พ.ศ. ......................</p>
+            </div>
+          </div>
+
+          <div className="mt-4 flex justify-center text-slate-950">
+            <div className="w-full max-w-md p-3 text-center text-xs sm:text-[13px] leading-relaxed">
+              <p className="font-bold">จึงเรียนมาเพื่อโปรดทราบ</p>
+              <div className="h-10" />
+              <p>ลงชื่อ.....................................................................</p>
+              <p className="mt-1 font-bold whitespace-pre">(        นายนิยม   สังข์เอียด        )</p>
+              <p>นายกองค์การบริหารส่วนตำบลหงษ์เจริญ</p>
+              <p>วันที่............เดือน........................พ.ศ. .......................</p>
             </div>
           </div>
         </div>

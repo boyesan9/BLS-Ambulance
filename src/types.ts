@@ -1,4 +1,4 @@
-export type UserRole = 'admin' | 'staff';
+export type UserRole = 'admin' | 'executive' | 'staff';
 
 export type UserStatus = 'active' | 'on_leave' | 'inactive';
 
@@ -78,6 +78,7 @@ export interface InspectionRecord {
   plateNumber: string;
   inspectorName: string;
   inspectorRole: UserRole;
+  inspectorDepartment?: string;
   uploadTimestamp: string;
   shift: ShiftType;
   shiftLabel: string;

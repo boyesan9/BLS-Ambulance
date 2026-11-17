@@ -38,6 +38,7 @@ import {
   RotateCcw,
   AlertCircle,
   Filter,
+  FileDown,
 } from 'lucide-react';
 
 interface EquipmentRequisitionViewProps {
@@ -59,9 +60,18 @@ export const EquipmentRequisitionView: React.FC<EquipmentRequisitionViewProps> =
   onDeleteRecord,
   isSubmitting = false,
 }) => {
+  const isExecutive = currentUser.role === 'executive';
   const defaultDate = useMemo(() => getDefaultThaiDateParts(), []);
 
-  const [activeTab, setActiveTab] = useState<'create' | 'history'>('create');
+  const [activeTab, setActiveTab] = useState<'create' | 'history'>(() =>
+    currentUser.role === 'executive' ? 'history' : 'create'
+  );
+
+  React.useEffect(() => {
+    if (isExecutive && activeTab !== 'history') {
+      setActiveTab('history');
+    }
+  }, [isExecutive, activeTab]);
   const [team, setTeam] = useState<EquipmentTeamType>('team_1');
   const [inspectDay, setInspectDay] = useState(defaultDate.day);
   const [inspectMonth, setInspectMonth] = useState(defaultDate.month);
@@ -246,153 +256,328 @@ export const EquipmentRequisitionView: React.FC<EquipmentRequisitionViewProps> =
     });
   }, [records, historyStatusFilter, historySearch]);
 
-  const buildRequisitionPrintHtml = (rec: EquipmentRequisitionRecord) => {
+  const escapeReqHtml = (value?: string | number | null) =>
+    String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
+  const getSafeReqPdfFilename = (rec: EquipmentRequisitionRecord) =>
+    `ใบเบิกอุปกรณ์และเวชภัณฑ์_${rec.requisitionNo}_${rec.inspectDay}-${rec.inspectMonth}-${rec.inspectYear}`
+      .replace(/[\\/:*?"<>|]+/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const buildRequisitionPrintHtml = (rec: EquipmentRequisitionRecord, showTopToolbar = false) => {
     const rowsHtml = rec.items
       .map(
         (item, idx) => `
-      <tr>
-        <td style="padding:5px 6px; border:1px solid #94a3b8; text-align:center; font-size:11px;">${idx + 1}</td>
-        <td style="padding:5px 8px; border:1px solid #94a3b8; font-size:11px;">${item.name}</td>
-        <td style="padding:5px 6px; border:1px solid #94a3b8; text-align:center; font-weight:700; font-size:11px;">${item.requestedQty}</td>
-        <td style="padding:5px 6px; border:1px solid #94a3b8; text-align:center; font-size:11px;">${item.unit}</td>
-        <td style="padding:5px 8px; border:1px solid #94a3b8; font-size:10.5px; color:#475569;">${item.notes || '-'}</td>
+      <tr class="item-row">
+        <td style="padding:5px 6px; border:1px solid #475569; text-align:center;">${idx + 1}</td>
+        <td style="padding:5px 8px; border:1px solid #475569;">${escapeReqHtml(item.name)}</td>
+        <td style="padding:5px 6px; border:1px solid #475569; text-align:center; font-weight:700;">${item.requestedQty}</td>
+        <td style="padding:5px 6px; border:1px solid #475569; text-align:center;">${escapeReqHtml(item.unit)}</td>
+        <td style="padding:5px 8px; border:1px solid #475569; color:#334155;">${escapeReqHtml(item.notes || '-')}</td>
       </tr>
     `
       )
       .join('');
 
+    const pdfTitle = getSafeReqPdfFilename(rec);
+    const vehicleText = rec.vehicleCode
+      ? `รถปฏิบัติการ ${escapeReqHtml(rec.vehicleCode)}${rec.plateNumber ? ` (${escapeReqHtml(rec.plateNumber)})` : ''}`
+      : '';
+
     return `<!DOCTYPE html>
 <html lang="th">
 <head>
   <meta charset="utf-8" />
-  <title>ใบเบิกอุปกรณ์กู้ชีพ_${rec.requisitionNo}</title>
+  <title>${escapeReqHtml(pdfTitle)}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
-    @page { size: A4 portrait; margin: 12mm 14mm; }
-    * { box-sizing: border-box; }
+    @page {
+      size: A4 portrait;
+      margin: 12mm 14mm;
+    }
+    * {
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
     body {
-      font-family: 'Sarabun', 'Prompt', -apple-system, BlinkMacSystemFont, sans-serif;
-      color: #0f172a;
-      background: #ffffff;
+      font-family: 'Sarabun', 'TH Sarabun New', 'TH SarabunPSK', sans-serif;
+      color: #000000;
+      background: ${showTopToolbar ? '#e2e8f0' : '#ffffff'};
       margin: 0;
-      padding: 12px 16px;
-      font-size: 11.5px;
-      line-height: 1.4;
+      padding: ${showTopToolbar ? '0 0 32px 0' : '0'};
+      font-size: 13px;
+      line-height: 1.45;
     }
-    .header {
-      text-align: center;
-      border-bottom: 2px solid #0f172a;
-      padding-bottom: 8px;
-      margin-bottom: 10px;
-    }
-    .title { font-size: 16px; font-weight: 700; margin: 0; }
-    .org { font-size: 13.5px; font-weight: 700; margin-top: 2px; }
-    .meta {
-      background: #f8fafc;
-      border: 1px solid #cbd5e1;
-      border-radius: 6px;
-      padding: 10px 14px;
-      margin-bottom: 10px;
-      font-size: 11.5px;
-      line-height: 1.7;
-    }
-    table { width: 100%; border-collapse: collapse; margin-top: 6px; }
-    th {
+    .toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
       background: #0f172a;
       color: #ffffff;
-      padding: 6px;
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+    }
+    .toolbar-btn {
+      background: #0284c7;
+      color: #ffffff;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 16px;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .toolbar-btn:hover {
+      background: #0369a1;
+    }
+    .page-sheet {
+      background: #ffffff;
+      width: ${showTopToolbar ? '210mm' : '100%'};
+      min-height: ${showTopToolbar ? '297mm' : 'auto'};
+      margin: ${showTopToolbar ? '18px auto' : '0'};
+      padding: ${showTopToolbar ? '14mm 16mm' : '0'};
+      box-shadow: ${showTopToolbar ? '0 8px 28px rgba(15, 23, 42, 0.16)' : 'none'};
+    }
+    .doc-ref {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11.5px;
+      color: #1e293b;
+      margin-bottom: 6px;
+    }
+    .doc-header {
+      text-align: center;
+      border-bottom: 3px double #0f172a;
+      padding-bottom: 8px;
+      margin-bottom: 12px;
+    }
+    .doc-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: #000000;
+      margin: 0;
+    }
+    .doc-org {
+      font-size: 14.5px;
+      font-weight: 700;
+      color: #000000;
+      margin: 2px 0;
+    }
+    .doc-date {
+      font-size: 13px;
+      color: #0f172a;
+      margin-top: 3px;
+    }
+    .memo-box {
+      border: 1px solid #334155;
+      background: #f8fafc;
+      padding: 10px 14px;
+      margin-bottom: 12px;
+      font-size: 13px;
+      line-height: 1.75;
+    }
+    .memo-blank {
+      display: inline-block;
+      min-width: 150px;
+      text-align: center;
+      border-bottom: 1px dotted #334155;
+      font-weight: 700;
+      padding: 0 10px;
+    }
+    table.req-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 4px;
+      font-size: 12px;
+    }
+    table.req-table thead {
+      display: table-header-group;
+    }
+    table.req-table th {
+      background: #e2e8f0;
+      color: #000000;
+      padding: 6px 8px;
+      border: 1px solid #334155;
+      font-size: 12.5px;
+      font-weight: 700;
+    }
+    tr.item-row {
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    tr.summary-row td {
+      background: #f8fafc;
+      border: 1px solid #334155;
+      padding: 5.5px 8px;
+      font-weight: 700;
+      font-size: 12px;
+      color: #0f172a;
+    }
+    .notes-box {
+      margin-top: 10px;
+      padding: 7px 10px;
       border: 1px solid #475569;
-      font-size: 11px;
+      background: #f8fafc;
+      font-size: 12px;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    .signatures-wrapper {
+      break-inside: avoid;
+      page-break-inside: avoid;
+      margin-top: 20px;
     }
     .sign-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 18px;
-      margin-top: 16px;
-      page-break-inside: avoid;
+      gap: 24px;
     }
     .sign-box {
-      border: 1px dashed #94a3b8;
-      padding: 8px;
+      padding: 6px 8px;
       text-align: center;
-      border-radius: 6px;
-      font-size: 10.5px;
+      font-size: 12.5px;
+      line-height: 1.6;
     }
-    @media print { body { padding: 0; } }
+    .sign-center {
+      margin-top: 14px;
+      display: flex;
+      justify-content: center;
+    }
+    .sign-center .sign-box {
+      width: 70%;
+      max-width: 400px;
+    }
+    @media print {
+      body {
+        background: #ffffff;
+        padding: 0;
+      }
+      .no-print {
+        display: none !important;
+      }
+      .page-sheet {
+        width: 100%;
+        min-height: auto;
+        margin: 0;
+        padding: 0;
+        box-shadow: none;
+      }
+    }
   </style>
 </head>
 <body>
-  <div class="header">
-    <div style="text-align:right; font-size:11px; margin-bottom:4px;">
-      เลขที่ใบเบิก: <strong style="font-family:monospace; font-size:12px;">${rec.requisitionNo}</strong>
-    </div>
-    <div class="title">ใบเบิกจ่าย วัสดุวิทยาศาสตร์หรือการแพทย์ (สำนักงานปลัด)</div>
-    <div class="org">${rec.organizationName}</div>
-    <div style="font-size:11px; margin-top:3px;">
-      ประจำวันที่ <strong>${rec.inspectDay}</strong> เดือน <strong>${rec.inspectMonth}</strong> พ.ศ. <strong>${rec.inspectYear}</strong>
-    </div>
-  </div>
-
-  <div class="meta">
-    <div><strong>เรียน</strong> นายกองค์การบริหารส่วนตำบลหงษ์เจริญ</div>
-    <div style="margin-top:2px;">
-      <strong>ข้าพเจ้า</strong> <span style="display:inline-block; min-width:140px; text-align:center; border-bottom:1px dotted #64748b; font-weight:700; padding:0 8px;">${rec.requesterName}</span>
-      &nbsp;&nbsp;<strong>ตำแหน่ง</strong> <span style="display:inline-block; min-width:140px; text-align:center; border-bottom:1px dotted #64748b; font-weight:700; padding:0 8px;">คนงานทั่วไป</span>
-    </div>
-    <div style="margin-top:2px;">สังกัด/ส่วน <strong>สำนักงานปลัด</strong> มีความประสงค์ขอเบิกวัสดุเพื่อใช้ในราชการ ตามรายการดังต่อไปนี้</div>
-  </div>
-
-  <table>
-    <thead>
-      <tr>
-        <th style="width:8%; text-align:center;">ลำดับ</th>
-        <th style="width:50%; text-align:left;">รายการอุปกรณ์ / เวชภัณฑ์</th>
-        <th style="width:12%; text-align:center;">จำนวนเบิก</th>
-        <th style="width:12%; text-align:center;">หน่วย</th>
-        <th style="width:18%; text-align:left;">หมายเหตุ</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${rowsHtml}
-    </tbody>
-  </table>
-
   ${
-    rec.purposeNotes
-      ? `<div style="margin-top:8px; padding:6px 10px; border:1px solid #cbd5e1; background:#f8fafc; font-size:11px;">
-          <strong>เหตุผล / หมายเหตุการขอเบิก:</strong> ${rec.purposeNotes}
-         </div>`
+    showTopToolbar
+      ? `<div class="toolbar no-print">
+          <div>
+            <strong>ใบเบิกอุปกรณ์และเวชภัณฑ์ (${escapeReqHtml(rec.organizationName)})</strong>
+            <span style="font-size:12px; color:#cbd5e1; margin-left:8px;">เลขที่ใบเบิก ${escapeReqHtml(rec.requisitionNo)} · ประจำวันที่ ${escapeReqHtml(rec.requestDateFormatted)}</span>
+          </div>
+          <button type="button" class="toolbar-btn" onclick="window.print()">พิมพ์ / บันทึกเป็น .PDF (A4)</button>
+        </div>`
       : ''
   }
-
-  <div class="sign-grid">
-    <div class="sign-box" style="display:flex; flex-direction:column; justify-content:flex-end;">
-      <div style="height:24px;"></div>
-      <div>ลงชื่อ.................................................. ผู้เบิก</div>
-      <div style="margin-top:3px; font-weight:700;">( ${currentUser.name || rec.requesterName} )</div>
-      <div style="margin-top:2px; font-size:10px;">คนงานทั่วไป</div>
-      <div style="margin-top:2px; font-size:10px;">วันที่ ${rec.inspectDay} เดือน ${rec.inspectMonth} พ.ศ. ${rec.inspectYear}</div>
+  <div class="page-sheet">
+    <div class="doc-ref">
+      <span>${vehicleText}</span>
+      <span>เลขที่ใบเบิก: <strong style="font-family:monospace; font-size:13px;">${escapeReqHtml(rec.requisitionNo)}</strong></span>
     </div>
-    <div class="sign-box">
-      <div style="text-align:left; margin-bottom:10px; line-height:1.6;">
-        <div>(&nbsp;&nbsp;) อนุมัติ</div>
-        <div>(&nbsp;&nbsp;) ไม่อนุมัติ เพราะ....................................................</div>
+
+    <div class="doc-header">
+      <div class="doc-title">ใบเบิกจ่าย วัสดุวิทยาศาสตร์หรือการแพทย์ (สำนักงานปลัด)</div>
+      <div class="doc-org">${escapeReqHtml(rec.organizationName)}</div>
+      <div class="doc-date">
+        ประจำวันที่ <strong>${escapeReqHtml(rec.inspectDay)}</strong> เดือน <strong>${escapeReqHtml(rec.inspectMonth)}</strong> พ.ศ. <strong>${escapeReqHtml(rec.inspectYear)}</strong>
       </div>
-      <div style="height:18px;"></div>
-      <div>ลงชื่อ.......................................................... ผู้อนุมัติ</div>
-      <div style="margin-top:3px; font-weight:700; white-space:pre;">(     นางสาวอภิญญา  จินาห้อง     )</div>
-      <div style="margin-top:2px; font-size:10px;">หัวหน้าสำนักปลัด</div>
-      <div style="margin-top:2px; font-size:10px;">วันที่...........เดือน.............................. พ.ศ.............</div>
     </div>
-  </div>
 
-  <div style="margin-top:14px; display:flex; justify-content:center; page-break-inside:avoid;">
-    <div class="sign-box" style="width:65%; max-width:380px;">
-      <div style="font-weight:700; margin-bottom:4px;">จึงเรียนมาเพื่อโปรดทราบ</div>
-      <div style="height:24px;"></div>
-      <div>ลงชื่อ.....................................................................</div>
-      <div style="margin-top:3px; font-weight:700; white-space:pre;">(        นายนิยม   สังข์เอียด        )</div>
-      <div style="margin-top:2px; font-size:10.5px;">นายกองค์การบริหารส่วนตำบลหงษ์เจริญ</div>
-      <div style="margin-top:2px; font-size:10px;">วันที่............เดือน........................พ.ศ. .......................</div>
+    <div class="memo-box">
+      <div><strong>เรียน</strong> นายกองค์การบริหารส่วนตำบลหงษ์เจริญ</div>
+      <div>
+        <strong>ข้าพเจ้า</strong> <span class="memo-blank">${escapeReqHtml(rec.requesterName)}</span>
+        &nbsp;&nbsp;<strong>ตำแหน่ง</strong> <span class="memo-blank">คนงานทั่วไป</span>
+      </div>
+      <div>
+        สังกัด/ส่วน <strong>สำนักงานปลัด</strong> มีความประสงค์ขอเบิกวัสดุเพื่อใช้ในราชการ${rec.vehicleCode ? ` (รถปฏิบัติการ ${escapeReqHtml(rec.vehicleCode)})` : ''} ตามรายการดังต่อไปนี้
+      </div>
+    </div>
+
+    <table class="req-table">
+      <thead>
+        <tr>
+          <th style="width:8%; text-align:center;">ลำดับ</th>
+          <th style="width:48%; text-align:left;">รายการอุปกรณ์ / เวชภัณฑ์</th>
+          <th style="width:12%; text-align:center;">จำนวนเบิก</th>
+          <th style="width:12%; text-align:center;">หน่วย</th>
+          <th style="width:20%; text-align:left;">หมายเหตุ</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rowsHtml}
+        <tr class="summary-row">
+          <td colspan="2" style="text-align:right;">รวมรายการที่ขอเบิกทั้งหมด (${rec.totalItemTypes} รายการ)</td>
+          <td style="text-align:center;">${rec.totalQuantity}</td>
+          <td style="text-align:center;">หน่วย</td>
+          <td></td>
+        </tr>
+      </tbody>
+    </table>
+
+    ${
+      rec.purposeNotes
+        ? `<div class="notes-box">
+            <strong>เหตุผล / หมายเหตุการขอเบิก:</strong> ${escapeReqHtml(rec.purposeNotes)}
+           </div>`
+        : ''
+    }
+
+    <div class="signatures-wrapper">
+      <div class="sign-grid">
+        <div class="sign-box" style="display:flex; flex-direction:column; justify-content:flex-end;">
+          <div style="height:28px;"></div>
+          <div>ลงชื่อ.................................................. ผู้เบิก</div>
+          <div style="font-weight:700;">( ${escapeReqHtml(rec.requesterName)} )</div>
+          <div style="font-size:11.5px;">คนงานทั่วไป</div>
+          <div style="font-size:11.5px;">วันที่ ${escapeReqHtml(rec.inspectDay)} เดือน ${escapeReqHtml(rec.inspectMonth)} พ.ศ. ${escapeReqHtml(rec.inspectYear)}</div>
+        </div>
+        <div class="sign-box">
+          <div style="text-align:left; width:82%; margin:0 auto 10px auto; line-height:1.65; font-size:12px;">
+            <div>(&nbsp;&nbsp;) อนุมัติ</div>
+            <div>(&nbsp;&nbsp;) ไม่อนุมัติ เพราะ....................................................</div>
+          </div>
+          <div style="height:18px;"></div>
+          <div>ลงชื่อ.......................................................... ผู้อนุมัติ</div>
+          <div style="font-weight:700; white-space:pre;">(     นางสาวอภิญญา  จินาห้อง     )</div>
+          <div style="font-size:11.5px;">หัวหน้าสำนักปลัด</div>
+          <div style="font-size:11.5px;">วันที่...........เดือน.............................. พ.ศ.............</div>
+        </div>
+      </div>
+
+      <div class="sign-center">
+        <div class="sign-box">
+          <div style="font-weight:700; margin-bottom:2px;">จึงเรียนมาเพื่อโปรดทราบ</div>
+          <div style="height:28px;"></div>
+          <div>ลงชื่อ.....................................................................</div>
+          <div style="font-weight:700; white-space:pre;">(        นายนิยม   สังข์เอียด        )</div>
+          <div style="font-size:12px;">นายกองค์การบริหารส่วนตำบลหงษ์เจริญ</div>
+          <div style="font-size:11.5px;">วันที่............เดือน........................พ.ศ. .......................</div>
+        </div>
+      </div>
     </div>
   </div>
 </body>
@@ -400,9 +585,10 @@ export const EquipmentRequisitionView: React.FC<EquipmentRequisitionViewProps> =
   };
 
   const handlePrintViaIframe = (rec: EquipmentRequisitionRecord) => {
+    const previousTitle = document.title;
     try {
-      setPrintStatus('กำลังเตรียมใบเบิกสำหรับสั่งพิมพ์...');
-      const htmlContent = buildRequisitionPrintHtml(rec);
+      setPrintStatus('กำลังจัดรูปแบบเอกสาร A4 และโหลดฟอนต์ราชการ...');
+      const htmlContent = buildRequisitionPrintHtml(rec, false);
       const printFrame = document.createElement('iframe');
       printFrame.setAttribute(
         'style',
@@ -411,18 +597,26 @@ export const EquipmentRequisitionView: React.FC<EquipmentRequisitionViewProps> =
       document.body.appendChild(printFrame);
 
       const frameDoc = printFrame.contentDocument || printFrame.contentWindow?.document;
-      if (frameDoc) {
+      if (frameDoc && printFrame.contentWindow) {
         frameDoc.open();
         frameDoc.write(htmlContent);
         frameDoc.close();
-        setTimeout(() => {
+        setTimeout(async () => {
           try {
+            document.title = getSafeReqPdfFilename(rec);
+            if ((frameDoc as any).fonts?.ready) {
+              await Promise.race([
+                (frameDoc as any).fonts.ready,
+                new Promise((res) => setTimeout(res, 1500)),
+              ]);
+            }
             printFrame.contentWindow?.focus();
             printFrame.contentWindow?.print();
-            setPrintStatus('เปิดหน้าต่างสั่งพิมพ์แล้ว');
+            setPrintStatus('เปิดหน้าต่างบันทึกเป็น .PDF / สั่งพิมพ์แล้ว');
           } catch {
             window.print();
           } finally {
+            document.title = previousTitle;
             setTimeout(() => {
               if (document.body.contains(printFrame)) {
                 document.body.removeChild(printFrame);
@@ -430,16 +624,20 @@ export const EquipmentRequisitionView: React.FC<EquipmentRequisitionViewProps> =
               setPrintStatus(null);
             }, 2500);
           }
-        }, 400);
+        }, 350);
+      } else {
+        setPrintStatus(null);
       }
     } catch {
+      document.title = previousTitle;
+      setPrintStatus(null);
       window.print();
     }
   };
 
   const handleOpenStandaloneTab = (rec: EquipmentRequisitionRecord) => {
     try {
-      const htmlContent = buildRequisitionPrintHtml(rec);
+      const htmlContent = buildRequisitionPrintHtml(rec, true);
       const win = window.open('', '_blank');
       if (win) {
         win.document.open();
@@ -506,18 +704,20 @@ export const EquipmentRequisitionView: React.FC<EquipmentRequisitionViewProps> =
           </div>
 
           <div className="flex items-center gap-1.5 rounded-2xl bg-slate-100 p-1.5 dark:bg-slate-800 self-start lg:self-auto">
-            <button
-              type="button"
-              onClick={() => setActiveTab('create')}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-bold transition-all ${
-                activeTab === 'create'
-                  ? 'bg-white text-sky-700 shadow-xs dark:bg-slate-900 dark:text-sky-400'
-                  : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
-              }`}
-            >
-              <PackagePlus className="h-4 w-4" />
-              <span>สร้างใบเบิกอุปกรณ์</span>
-            </button>
+            {!isExecutive && (
+              <button
+                type="button"
+                onClick={() => setActiveTab('create')}
+                className={`inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-bold transition-all ${
+                  activeTab === 'create'
+                    ? 'bg-white text-sky-700 shadow-xs dark:bg-slate-900 dark:text-sky-400'
+                    : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
+                }`}
+              >
+                <PackagePlus className="h-4 w-4" />
+                <span>สร้างใบเบิกอุปกรณ์</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setActiveTab('history')}
@@ -528,11 +728,44 @@ export const EquipmentRequisitionView: React.FC<EquipmentRequisitionViewProps> =
               }`}
             >
               <Calendar className="h-4 w-4" />
-              <span>ประวัติใบเบิก ({records.length})</span>
+              <span>{isExecutive ? `แดชบอร์ดประวัติใบเบิก (${records.length})` : `ประวัติใบเบิก (${records.length})`}</span>
             </button>
           </div>
         </div>
       </div>
+
+      {/* Executive / History Summary KPI Strip */}
+      {activeTab === 'history' && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-2xs dark:border-slate-800 dark:bg-slate-900">
+            <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">ใบเบิกทั้งหมด</span>
+            <p className="mt-1 font-mono text-xl font-extrabold text-slate-900 dark:text-white tabular-nums">
+              {records.length} <span className="text-xs font-normal text-slate-400">ใบ</span>
+            </p>
+          </div>
+          <div className="rounded-2xl border border-amber-200 bg-amber-50/50 p-3.5 shadow-2xs dark:border-amber-950 dark:bg-amber-950/20">
+            <span className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">รออนุมัติเบิก</span>
+            <p className="mt-1 font-mono text-xl font-extrabold text-amber-600 dark:text-amber-400 tabular-nums">
+              {records.filter((r) => r.status === 'pending').length}{' '}
+              <span className="text-xs font-normal text-amber-600/70">ใบ</span>
+            </p>
+          </div>
+          <div className="rounded-2xl border border-sky-200 bg-sky-50/50 p-3.5 shadow-2xs dark:border-sky-950 dark:bg-sky-950/20">
+            <span className="text-[11px] font-semibold text-sky-700 dark:text-sky-300">อนุมัติแล้ว</span>
+            <p className="mt-1 font-mono text-xl font-extrabold text-sky-600 dark:text-sky-400 tabular-nums">
+              {records.filter((r) => r.status === 'approved').length}{' '}
+              <span className="text-xs font-normal text-sky-600/70">ใบ</span>
+            </p>
+          </div>
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-3.5 shadow-2xs dark:border-emerald-950 dark:bg-emerald-950/20">
+            <span className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">จ่ายอุปกรณ์แล้ว</span>
+            <p className="mt-1 font-mono text-xl font-extrabold text-emerald-600 dark:text-emerald-400 tabular-nums">
+              {records.filter((r) => r.status === 'dispensed').length}{' '}
+              <span className="text-xs font-normal text-emerald-600/70">ใบ</span>
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* ========================================================= */}
       {/* TAB 1: CREATE REQUISITION FORM                            */}
@@ -1089,9 +1322,10 @@ export const EquipmentRequisitionView: React.FC<EquipmentRequisitionViewProps> =
                         type="button"
                         onClick={() => setPrintRecord(rec)}
                         className="inline-flex items-center gap-1 rounded-xl bg-slate-900 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-slate-800 dark:bg-sky-600 dark:hover:bg-sky-500"
+                        title="ดูแบบฟอร์มราชการและบันทึกเป็น .PDF ขนาด A4"
                       >
-                        <Printer className="h-3.5 w-3.5" />
-                        <span>พิมพ์ใบเบิก</span>
+                        <FileDown className="h-3.5 w-3.5" />
+                        <span>พิมพ์ / .PDF</span>
                       </button>
 
                       {currentUser.role === 'admin' && (
@@ -1136,8 +1370,8 @@ export const EquipmentRequisitionView: React.FC<EquipmentRequisitionViewProps> =
                   }}
                   className="inline-flex items-center gap-1.5 rounded-xl bg-sky-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-sky-500"
                 >
-                  <Printer className="h-3.5 w-3.5" />
-                  <span>พิมพ์ใบเบิก</span>
+                  <FileDown className="h-3.5 w-3.5" />
+                  <span>พิมพ์ / บันทึกเป็น .PDF</span>
                 </button>
                 <button
                   type="button"
@@ -1190,14 +1424,14 @@ export const EquipmentRequisitionView: React.FC<EquipmentRequisitionViewProps> =
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-6 py-4 bg-slate-50 dark:border-slate-800 dark:bg-slate-850">
               <div className="flex items-center gap-2.5">
                 <div className="rounded-lg bg-sky-100 p-2 text-sky-700 dark:bg-sky-950 dark:text-sky-300">
-                  <Printer className="h-5 w-5" />
+                  <FileDown className="h-5 w-5" />
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                    ใบเบิกอุปกรณ์และเวชภัณฑ์ ({printRecord.requisitionNo})
+                    พิมพ์ / บันทึกเป็น .PDF ใบเบิกอุปกรณ์และเวชภัณฑ์ ({printRecord.requisitionNo})
                   </h3>
                   <p className="text-[11px] text-slate-500">
-                    {printRecord.organizationName} · {printRecord.teamLabel} · {printRecord.requestDateFormatted}
+                    {printRecord.organizationName} · {printRecord.teamLabel} · เลือกปลายทางเป็น &ldquo;บันทึกเป็น PDF (Save as PDF)&rdquo; ขนาด A4
                   </p>
                 </div>
               </div>
@@ -1209,18 +1443,20 @@ export const EquipmentRequisitionView: React.FC<EquipmentRequisitionViewProps> =
                 <button
                   type="button"
                   onClick={() => handlePrintViaIframe(printRecord)}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-sky-600 px-3.5 py-2 text-xs font-bold text-white shadow-sm hover:bg-sky-500"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-sky-600 px-3.5 py-2 text-xs font-bold text-white shadow-sm hover:bg-sky-500 active:scale-95 transition-all"
+                  title="พิมพ์หรือบันทึกเป็นไฟล์ .PDF ขนาด A4 รูปแบบราชการ"
                 >
                   <Printer className="h-4 w-4" />
-                  <span>สั่งพิมพ์ทันที</span>
+                  <span>พิมพ์ / บันทึกเป็น .PDF</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => handleOpenStandaloneTab(printRecord)}
                   className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  title="เปิดหน้ากระดาษ A4 เต็มหน้าในแท็บใหม่เพื่อดูตัวอย่างก่อนบันทึก PDF"
                 >
                   <ExternalLink className="h-3.5 w-3.5" />
-                  <span>เปิดในแท็บใหม่</span>
+                  <span>เปิดหน้ากระดาษ A4</span>
                 </button>
                 <button
                   type="button"
@@ -1232,15 +1468,34 @@ export const EquipmentRequisitionView: React.FC<EquipmentRequisitionViewProps> =
               </div>
             </div>
 
-            <div className="max-h-[78vh] overflow-y-auto p-6 sm:p-8 bg-white text-slate-900">
-              <div className="text-center border-b-2 border-slate-900 pb-3 mb-4">
-                <div className="text-right text-xs mb-1">
-                  เลขที่ใบเบิก{' '}
-                  <span className="font-mono font-bold underline px-1">{printRecord.requisitionNo}</span>
-                </div>
-                <h2 className="text-base font-bold">ใบเบิกจ่าย วัสดุวิทยาศาสตร์หรือการแพทย์ (สำนักงานปลัด)</h2>
-                <p className="text-sm font-bold mt-0.5">{printRecord.organizationName}</p>
-                <p className="text-xs mt-1">
+            <div
+              className="max-h-[78vh] overflow-y-auto p-6 sm:p-10 bg-white text-slate-950 space-y-4"
+              style={{ fontFamily: "'Sarabun', 'Prompt', sans-serif" }}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-700">
+                <span>
+                  {printRecord.vehicleCode
+                    ? `รถปฏิบัติการ ${printRecord.vehicleCode}${
+                        printRecord.plateNumber ? ` (${printRecord.plateNumber})` : ''
+                      }`
+                    : ''}
+                </span>
+                <span>
+                  เลขที่ใบเบิก:{' '}
+                  <strong className="font-mono text-sm text-slate-950">
+                    {printRecord.requisitionNo}
+                  </strong>
+                </span>
+              </div>
+
+              <div className="border-b-[3px] border-double border-slate-900 pb-3 text-center">
+                <h2 className="text-base sm:text-lg font-bold text-slate-950">
+                  ใบเบิกจ่าย วัสดุวิทยาศาสตร์หรือการแพทย์ (สำนักงานปลัด)
+                </h2>
+                <p className="text-sm sm:text-base font-bold mt-0.5 text-slate-950">
+                  {printRecord.organizationName}
+                </p>
+                <p className="text-xs sm:text-sm mt-1 text-slate-900">
                   ประจำวันที่{' '}
                   <span className="font-bold underline px-1">{printRecord.inspectDay}</span> เดือน{' '}
                   <span className="font-bold underline px-1">{printRecord.inspectMonth}</span> พ.ศ.{' '}
@@ -1248,81 +1503,99 @@ export const EquipmentRequisitionView: React.FC<EquipmentRequisitionViewProps> =
                 </p>
               </div>
 
-              <div className="rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-xs leading-relaxed mb-4 space-y-1.5">
+              <div className="border border-slate-700 bg-slate-50 px-4 py-3 text-xs sm:text-[13px] leading-relaxed space-y-1.5 text-slate-950">
                 <p>
                   <span className="font-bold">เรียน</span> นายกองค์การบริหารส่วนตำบลหงษ์เจริญ
                 </p>
                 <p>
                   <span className="font-bold">ข้าพเจ้า</span>{' '}
-                  <span className="inline-block min-w-[140px] text-center border-b border-dotted border-slate-500 font-bold px-2">
+                  <span className="inline-block min-w-[150px] text-center border-b border-dotted border-slate-700 font-bold px-2">
                     {printRecord.requesterName}
                   </span>{' '}
                   <span className="font-bold ml-2">ตำแหน่ง</span>{' '}
-                  <span className="inline-block min-w-[140px] text-center border-b border-dotted border-slate-500 font-bold px-2">
+                  <span className="inline-block min-w-[150px] text-center border-b border-dotted border-slate-700 font-bold px-2">
                     คนงานทั่วไป
                   </span>
                 </p>
                 <p>
-                  สังกัด/ส่วน <span className="font-bold">สำนักงานปลัด</span> มีความประสงค์ขอเบิกวัสดุเพื่อใช้ในราชการ ตามรายการดังต่อไปนี้
+                  สังกัด/ส่วน <span className="font-bold">สำนักงานปลัด</span>{' '}
+                  มีความประสงค์ขอเบิกวัสดุเพื่อใช้ในราชการ
+                  {printRecord.vehicleCode ? ` (รถปฏิบัติการ ${printRecord.vehicleCode})` : ''} ตามรายการดังต่อไปนี้
                 </p>
               </div>
 
-              <table className="w-full border-collapse border border-slate-400 text-[11px]">
+              <table className="w-full border-collapse border border-slate-700 text-xs">
                 <thead>
-                  <tr className="bg-slate-900 text-white">
-                    <th className="border border-slate-400 p-1.5 text-center w-12">ลำดับ</th>
-                    <th className="border border-slate-400 p-1.5 text-left">รายการอุปกรณ์ / เวชภัณฑ์</th>
-                    <th className="border border-slate-400 p-1.5 text-center w-20">จำนวนเบิก</th>
-                    <th className="border border-slate-400 p-1.5 text-center w-20">หน่วย</th>
-                    <th className="border border-slate-400 p-1.5 text-left w-32">หมายเหตุ</th>
+                  <tr className="bg-slate-200 text-slate-950">
+                    <th className="border border-slate-700 p-1.5 text-center w-12 font-bold">ลำดับ</th>
+                    <th className="border border-slate-700 p-1.5 text-left font-bold">รายการอุปกรณ์ / เวชภัณฑ์</th>
+                    <th className="border border-slate-700 p-1.5 text-center w-24 font-bold">จำนวนเบิก</th>
+                    <th className="border border-slate-700 p-1.5 text-center w-20 font-bold">หน่วย</th>
+                    <th className="border border-slate-700 p-1.5 text-left w-36 font-bold">หมายเหตุ</th>
                   </tr>
                 </thead>
                 <tbody>
                   {printRecord.items.map((item, idx) => (
                     <tr key={item.id}>
-                      <td className="border border-slate-400 p-1.5 text-center">{idx + 1}</td>
-                      <td className="border border-slate-400 p-1.5">{item.name}</td>
-                      <td className="border border-slate-400 p-1.5 text-center font-bold">
+                      <td className="border border-slate-600 p-1.5 text-center">{idx + 1}</td>
+                      <td className="border border-slate-600 p-1.5">{item.name}</td>
+                      <td className="border border-slate-600 p-1.5 text-center font-bold">
                         {item.requestedQty}
                       </td>
-                      <td className="border border-slate-400 p-1.5 text-center">{item.unit}</td>
-                      <td className="border border-slate-400 p-1.5">{item.notes || '-'}</td>
+                      <td className="border border-slate-600 p-1.5 text-center">{item.unit}</td>
+                      <td className="border border-slate-600 p-1.5 text-slate-700">{item.notes || '-'}</td>
                     </tr>
                   ))}
+                  <tr className="bg-slate-50 font-bold text-slate-950">
+                    <td colSpan={2} className="border border-slate-700 p-1.5 text-right">
+                      รวมรายการที่ขอเบิกทั้งหมด ({printRecord.totalItemTypes} รายการ)
+                    </td>
+                    <td className="border border-slate-700 p-1.5 text-center">
+                      {printRecord.totalQuantity}
+                    </td>
+                    <td className="border border-slate-700 p-1.5 text-center">หน่วย</td>
+                    <td className="border border-slate-700 p-1.5" />
+                  </tr>
                 </tbody>
               </table>
 
-              <div className="grid grid-cols-2 gap-6 mt-6 text-xs text-center">
-                <div className="rounded-lg border border-dashed border-slate-300 p-3 flex flex-col justify-end">
-                  <div className="h-8" />
+              {printRecord.purposeNotes && (
+                <div className="border border-slate-700 bg-slate-50 px-3 py-2 text-xs text-slate-900">
+                  <span className="font-bold">เหตุผล / หมายเหตุการขอเบิก:</span> {printRecord.purposeNotes}
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-6 pt-5 text-xs sm:text-[13px] text-center text-slate-950">
+                <div className="p-2 flex flex-col justify-end leading-relaxed">
+                  <div className="h-9" />
                   <p>ลงชื่อ.................................................. ผู้เบิก</p>
-                  <p className="font-bold mt-1">( {currentUser.name || printRecord.requesterName} )</p>
-                  <p className="mt-0.5 text-[11px]">คนงานทั่วไป</p>
-                  <p className="mt-0.5 text-[11px]">
+                  <p className="font-bold mt-1">( {printRecord.requesterName} )</p>
+                  <p className="text-[11.5px]">คนงานทั่วไป</p>
+                  <p className="text-[11.5px]">
                     วันที่ {printRecord.inspectDay} เดือน {printRecord.inspectMonth} พ.ศ. {printRecord.inspectYear}
                   </p>
                 </div>
-                <div className="rounded-lg border border-dashed border-slate-300 p-3">
-                  <div className="text-left space-y-1 mb-3 text-[11px]">
+                <div className="p-2 leading-relaxed">
+                  <div className="text-left w-4/5 mx-auto space-y-1 mb-3 text-xs">
                     <p>(&nbsp;&nbsp;) อนุมัติ</p>
                     <p>(&nbsp;&nbsp;) ไม่อนุมัติ เพราะ....................................................</p>
                   </div>
                   <div className="h-5" />
                   <p>ลงชื่อ.......................................................... ผู้อนุมัติ</p>
                   <p className="font-bold mt-1 whitespace-pre">(     นางสาวอภิญญา  จินาห้อง     )</p>
-                  <p className="mt-0.5 text-[11px]">หัวหน้าสำนักปลัด</p>
-                  <p className="mt-0.5 text-[11px]">วันที่...........เดือน.............................. พ.ศ.............</p>
+                  <p className="text-[11.5px]">หัวหน้าสำนักปลัด</p>
+                  <p className="text-[11.5px]">วันที่...........เดือน.............................. พ.ศ.............</p>
                 </div>
               </div>
 
-              <div className="mt-6 flex justify-center">
-                <div className="w-full max-w-sm rounded-lg border border-dashed border-slate-300 p-4 text-xs text-center">
+              <div className="mt-4 flex justify-center text-slate-950">
+                <div className="w-full max-w-md p-2 text-xs sm:text-[13px] text-center leading-relaxed">
                   <p className="font-bold">จึงเรียนมาเพื่อโปรดทราบ</p>
-                  <div className="h-8" />
+                  <div className="h-9" />
                   <p>ลงชื่อ.....................................................................</p>
                   <p className="font-bold mt-1 whitespace-pre">(        นายนิยม   สังข์เอียด        )</p>
-                  <p className="mt-0.5 text-[11px]">นายกองค์การบริหารส่วนตำบลหงษ์เจริญ</p>
-                  <p className="mt-0.5 text-[11px]">วันที่............เดือน........................พ.ศ. .......................</p>
+                  <p className="text-xs">นายกองค์การบริหารส่วนตำบลหงษ์เจริญ</p>
+                  <p className="text-[11.5px]">วันที่............เดือน........................พ.ศ. .......................</p>
                 </div>
               </div>
             </div>

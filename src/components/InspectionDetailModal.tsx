@@ -191,7 +191,12 @@ export const InspectionDetailModal: React.FC<InspectionDetailModalProps> = ({
                   {record.inspectorName}
                 </p>
                 <p className="text-[10px] text-slate-400 capitalize">
-                  ระดับสิทธิ์: {record.inspectorRole === 'admin' ? 'Admin' : 'พนักงานทั่วไป'}
+                  ระดับสิทธิ์:{' '}
+                  {record.inspectorRole === 'admin'
+                    ? 'Admin'
+                    : record.inspectorRole === 'executive'
+                    ? 'ผู้บริหาร (Executive)'
+                    : 'พนักงานทั่วไป'}
                 </p>
               </div>
 

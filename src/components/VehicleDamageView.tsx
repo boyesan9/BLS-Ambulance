@@ -1,7 +1,16 @@
 import React, { useState } from 'react';
 import { AmbulanceVehicle, DamageSeverity, UserProfile, VehicleDamageItem } from '../types';
 import { compressImage } from '../utils/imageCompressor';
-import { generateSvgDamagePlaceholder } from '../services/storage';
+import {
+  generateSvgDamagePlaceholder,
+  getDriveImageFallbackUrls,
+  toDisplayableDriveImageUrl,
+} from '../services/storage';
+import {
+  ORGANIZATION_NAME,
+  THAI_MONTHS,
+  getDefaultThaiDateParts,
+} from '../data/equipmentChecklist';
 import {
   Car,
   Plus,
@@ -20,6 +29,8 @@ import {
   Filter,
   ExternalLink,
   Pencil,
+  Printer,
+  FileDown,
 } from 'lucide-react';
 
 interface VehicleDamageViewProps {
@@ -87,6 +98,83 @@ const SEVERITY_LABELS: Record<DamageSeverity, { label: string; color: string; ba
   },
 };
 
+function escapeDamageHtml(value?: string | number | null): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function getDamageReportDateParts(singleItem?: VehicleDamageItem): {
+  day: string;
+  month: string;
+  year: string;
+} {
+  if (singleItem?.createdAt) {
+    const raw = singleItem.createdAt.trim();
+    const numericMatch = raw.match(/(\d{1,2})[/-](\d{1,2})[/-](\d{4})/);
+    if (numericMatch) {
+      const d = parseInt(numericMatch[1], 10);
+      const m = parseInt(numericMatch[2], 10);
+      const y = parseInt(numericMatch[3], 10);
+      if (d >= 1 && d <= 31 && m >= 1 && m <= 12 && y > 0) {
+        return {
+          day: String(d),
+          month: THAI_MONTHS[m - 1],
+          year: String(y < 2400 ? y + 543 : y),
+        };
+      }
+    }
+    const idTsMatch = singleItem.id.match(/(\d{13})/);
+    if (idTsMatch) {
+      const dt = new Date(Number(idTsMatch[1]));
+      if (!Number.isNaN(dt.getTime())) {
+        return {
+          day: String(dt.getDate()),
+          month: THAI_MONTHS[dt.getMonth()] || THAI_MONTHS[0],
+          year: String(dt.getFullYear() + 543),
+        };
+      }
+    }
+  }
+  return getDefaultThaiDateParts();
+}
+
+const DamageReportPhotoImg: React.FC<{
+  primary?: string;
+  driveUrl?: string;
+  positionArea: string;
+  description: string;
+  alt: string;
+  className: string;
+}> = ({ primary, driveUrl, positionArea, description, alt, className }) => {
+  const candidates = React.useMemo(() => {
+    const first = toDisplayableDriveImageUrl(primary, driveUrl) || primary || '';
+    const fallbacks = getDriveImageFallbackUrls(primary, driveUrl);
+    const svg = generateSvgDamagePlaceholder(positionArea, description);
+    return Array.from(new Set([first, ...fallbacks, svg].filter(Boolean)));
+  }, [primary, driveUrl, positionArea, description]);
+
+  const [idx, setIdx] = useState(0);
+  const src = candidates[idx] || generateSvgDamagePlaceholder(positionArea, description);
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className={className}
+      referrerPolicy="no-referrer"
+      onError={() => {
+        if (idx + 1 < candidates.length) {
+          setIdx(idx + 1);
+        }
+      }}
+    />
+  );
+};
+
 export const VehicleDamageView: React.FC<VehicleDamageViewProps> = ({
   currentUser,
   vehicles,
@@ -101,6 +189,9 @@ export const VehicleDamageView: React.FC<VehicleDamageViewProps> = ({
   const [modalOpen, setModalOpen] = useState(false);
   const [editingDamageId, setEditingDamageId] = useState<string | null>(null);
   const [viewPhotoModalUrl, setViewPhotoModalUrl] = useState<string | null>(null);
+  const [reportModalItems, setReportModalItems] = useState<VehicleDamageItem[] | null>(null);
+  const [reportModalTitle, setReportModalTitle] = useState<string>('');
+  const [printStatus, setPrintStatus] = useState<string | null>(null);
 
   // Form states for new damage record
   const [selectedVehicleId, setSelectedVehicleId] = useState<string>(vehicles[0]?.id || '');
@@ -311,6 +402,575 @@ export const VehicleDamageView: React.FC<VehicleDamageViewProps> = ({
     return generateSvgDamagePlaceholder(position || 'จุดความเสียหาย', desc || 'รอยแผลตัวรถ');
   };
 
+  const getReportScopeLabel = (items: VehicleDamageItem[]): string => {
+    const uniqueVehicles = Array.from(
+      new Set(items.map((i) => `${i.vehicleCode}${i.plateNumber ? ` (${i.plateNumber})` : ''}`))
+    );
+    if (uniqueVehicles.length === 1) return uniqueVehicles[0];
+    if (selectedFilterVehicle) {
+      return `${selectedFilterVehicle.code} (${selectedFilterVehicle.plateNumber})`;
+    }
+    return `รถกู้ชีพ BLS (${uniqueVehicles.length || vehicles.length} คัน)`;
+  };
+
+  const getSafeDamagePdfFilename = (items: VehicleDamageItem[]): string => {
+    const scope =
+      items.length === 1
+        ? `${items[0].vehicleCode}_${items[0].positionArea}`
+        : selectedFilterVehicle
+        ? `${selectedFilterVehicle.code}_${selectedFilterVehicle.plateNumber}`
+        : 'รวมทุกคัน';
+    const dParts = getDamageReportDateParts(items.length === 1 ? items[0] : undefined);
+    return `รายงานบันทึกรอยรอบตัวรถ_${scope}_${dParts.day}-${dParts.month}-${dParts.year}`
+      .replace(/[\\/:*?"<>|]+/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+
+  const handleOpenReportModal = (items: VehicleDamageItem[], customLabel?: string) => {
+    if (!items || items.length === 0) return;
+    setReportModalItems(items);
+    setReportModalTitle(customLabel || getReportScopeLabel(items));
+  };
+
+  const buildDamageReportHtml = (items: VehicleDamageItem[], showTopToolbar = false): string => {
+    const singleItem = items.length === 1 ? items[0] : undefined;
+    const dateParts = getDamageReportDateParts(singleItem);
+    const scopeLabel = getReportScopeLabel(items);
+    const pdfTitle = getSafeDamagePdfFilename(items);
+    const pendingCount = items.filter((d) => !d.resolved).length;
+    const resolvedCount = items.filter((d) => d.resolved).length;
+    const printTimestamp = new Date().toLocaleString('th-TH', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+    const uniqueInspectors = Array.from(new Set(items.map((d) => d.inspectorName).filter(Boolean)));
+    const signerName =
+      singleItem?.inspectorName ||
+      (uniqueInspectors.length === 1 ? uniqueInspectors[0] : currentUser?.name) ||
+      'เจ้าหน้าที่ผู้ตรวจเช็ค';
+
+    const tableRowsHtml = items
+      .map((item, idx) => {
+        const sev = SEVERITY_LABELS[item.severity] || SEVERITY_LABELS.minor_scratch;
+        const statusLabel = item.resolved ? '✓ ซ่อมบำรุงแล้ว' : '⚠ รอซ่อมสี/ซ่อมบำรุง';
+        const statusColor = item.resolved ? '#15803d' : '#b45309';
+        return `
+      <tr class="item-row">
+        <td style="text-align:center;">${idx + 1}</td>
+        <td style="white-space:nowrap;">
+          <strong>${escapeDamageHtml(item.vehicleCode)}</strong><br />
+          <span style="font-size:11px; color:#334155;">${escapeDamageHtml(item.plateNumber)}</span>
+        </td>
+        <td><strong>${escapeDamageHtml(item.positionArea)}</strong></td>
+        <td>${escapeDamageHtml(sev.label)}</td>
+        <td>${escapeDamageHtml(item.description)}</td>
+        <td style="font-size:11px;">
+          ${escapeDamageHtml(item.createdAt)}<br />
+          <span style="color:#334155;">โดย: ${escapeDamageHtml(item.inspectorName)}</span>
+        </td>
+        <td style="text-align:center; font-weight:700; color:${statusColor}; white-space:nowrap;">
+          ${statusLabel}
+        </td>
+      </tr>`;
+      })
+      .join('');
+
+    const evidenceBlocksHtml = items
+      .map((item, idx) => {
+        const sev = SEVERITY_LABELS[item.severity] || SEVERITY_LABELS.minor_scratch;
+        const statusLabel = item.resolved ? '✓ ซ่อมบำรุงแล้ว' : '⚠ รอซ่อมสี/ซ่อมบำรุง';
+        const svgFallback = generateSvgDamagePlaceholder(
+          item.positionArea,
+          item.description || item.vehicleCode
+        );
+
+        const allPhotos: Array<{ label: string; primary?: string; driveUrl?: string }> = [
+          {
+            label: `ภาพหลัก: ${item.positionArea}`,
+            primary: item.photoUrl,
+            driveUrl: item.drivePhotoUrl,
+          },
+          ...(item.additionalPhotos || []).map((photo, pIdx) => ({
+            label: `มุมเพิ่มเติม #${pIdx + 1}: ${item.positionArea}`,
+            primary: photo,
+            driveUrl: item.driveAdditionalPhotoUrls?.[pIdx],
+          })),
+        ];
+
+        const photosGridHtml = allPhotos
+          .map((p) => {
+            const first = toDisplayableDriveImageUrl(p.primary, p.driveUrl) || p.primary || '';
+            const fallbacks = getDriveImageFallbackUrls(p.primary, p.driveUrl);
+            const candidates = Array.from(new Set([first, ...fallbacks, svgFallback].filter(Boolean)));
+            const src = candidates[0] || svgFallback;
+            const fallbackJson = escapeDamageHtml(JSON.stringify(candidates));
+            return `
+              <div class="evidence-photo-box">
+                <img src="${escapeDamageHtml(src)}" alt="${escapeDamageHtml(p.label)}" referrerpolicy="no-referrer" data-candidates="${fallbackJson}" data-idx="0" onerror="var list=JSON.parse(this.dataset.candidates||'[]');var i=parseInt(this.dataset.idx||'0',10)+1;if(i<list.length){this.dataset.idx=i;this.src=list[i];}" />
+                <div class="evidence-photo-label">${escapeDamageHtml(p.label)}</div>
+              </div>`;
+          })
+          .join('');
+
+        return `
+      <div class="evidence-card">
+        <div class="evidence-card-header">
+          <span>
+            <strong>จุดที่ ${idx + 1}:</strong> ${escapeDamageHtml(item.vehicleCode)} (${escapeDamageHtml(item.plateNumber)}) — <strong>${escapeDamageHtml(item.positionArea)}</strong>
+          </span>
+          <span>
+            ${escapeDamageHtml(sev.label)} &nbsp;|&nbsp; <strong style="color:${item.resolved ? '#15803d' : '#b45309'};">${statusLabel}</strong>
+          </span>
+        </div>
+        <div class="evidence-card-desc">
+          <strong>รายละเอียด:</strong> ${escapeDamageHtml(item.description)}
+          ${item.odometerAtReport ? ` &nbsp;|&nbsp; <strong>เลขไมล์:</strong> ${item.odometerAtReport.toLocaleString()} กม.` : ''}
+          &nbsp;|&nbsp; <strong>บันทึกเมื่อ:</strong> ${escapeDamageHtml(item.createdAt)} (${escapeDamageHtml(item.inspectorName)})
+        </div>
+        <div class="evidence-photos-grid ${allPhotos.length === 1 ? 'single-photo' : ''}">
+          ${photosGridHtml}
+        </div>
+      </div>`;
+      })
+      .join('');
+
+    return `<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeDamageHtml(pdfTitle)}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    @page {
+      size: A4 portrait;
+      margin: 12mm 14mm;
+    }
+    * {
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+    body {
+      font-family: 'Sarabun', 'TH Sarabun New', 'TH SarabunPSK', sans-serif;
+      color: #000000;
+      background: ${showTopToolbar ? '#e2e8f0' : '#ffffff'};
+      margin: 0;
+      padding: ${showTopToolbar ? '0 0 32px 0' : '0'};
+      font-size: 12.5px;
+      line-height: 1.45;
+    }
+    .toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: #0f172a;
+      color: #ffffff;
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+    }
+    .toolbar-btn {
+      background: #0284c7;
+      color: #ffffff;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 16px;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .toolbar-btn:hover {
+      background: #0369a1;
+    }
+    .page-sheet {
+      background: #ffffff;
+      width: ${showTopToolbar ? '210mm' : '100%'};
+      min-height: ${showTopToolbar ? '297mm' : 'auto'};
+      margin: ${showTopToolbar ? '18px auto' : '0'};
+      padding: ${showTopToolbar ? '14mm 16mm' : '0'};
+      box-shadow: ${showTopToolbar ? '0 8px 28px rgba(15, 23, 42, 0.16)' : 'none'};
+    }
+    .doc-ref {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      color: #334155;
+      margin-bottom: 4px;
+    }
+    .doc-header {
+      text-align: center;
+      border-bottom: 3px double #0f172a;
+      padding-bottom: 8px;
+      margin-bottom: 10px;
+    }
+    .doc-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: #000000;
+      margin: 0;
+    }
+    .doc-org {
+      font-size: 14.5px;
+      font-weight: 700;
+      color: #000000;
+      margin: 2px 0;
+    }
+    .doc-date {
+      font-size: 12.5px;
+      color: #0f172a;
+      margin-top: 3px;
+    }
+    .meta-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 10px;
+      font-size: 12px;
+    }
+    .meta-table td {
+      border: 1px solid #334155;
+      padding: 6px 10px;
+      vertical-align: top;
+      background: #ffffff;
+    }
+    .section-heading {
+      font-size: 13px;
+      font-weight: 700;
+      color: #000000;
+      border-left: 3px solid #0f172a;
+      padding-left: 8px;
+      margin: 12px 0 6px 0;
+    }
+    table.dmg-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11.5px;
+    }
+    table.dmg-table thead {
+      display: table-header-group;
+    }
+    table.dmg-table th {
+      background: #e2e8f0;
+      color: #000000;
+      padding: 6px;
+      border: 1px solid #334155;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    table.dmg-table td {
+      padding: 5px 6px;
+      border: 1px solid #475569;
+      vertical-align: top;
+    }
+    tr.item-row {
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    .evidence-card {
+      border: 1px solid #334155;
+      margin-bottom: 10px;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    .evidence-card-header {
+      background: #e2e8f0;
+      border-bottom: 1px solid #334155;
+      padding: 5px 10px;
+      font-size: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .evidence-card-desc {
+      background: #f8fafc;
+      border-bottom: 1px solid #cbd5e1;
+      padding: 5px 10px;
+      font-size: 11.5px;
+      color: #0f172a;
+    }
+    .evidence-photos-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+      padding: 8px;
+      background: #ffffff;
+    }
+    .evidence-photos-grid.single-photo {
+      grid-template-columns: 1fr;
+      max-width: 440px;
+      margin: 0 auto;
+    }
+    .evidence-photo-box {
+      border: 1px solid #94a3b8;
+      background: #ffffff;
+      text-align: center;
+    }
+    .evidence-photo-box img {
+      width: 100%;
+      height: 175px;
+      object-fit: cover;
+      display: block;
+      background: #f1f5f9;
+    }
+    .evidence-photos-grid.single-photo .evidence-photo-box img {
+      height: 220px;
+    }
+    .evidence-photo-label {
+      padding: 3px 6px;
+      font-size: 11px;
+      font-weight: 700;
+      border-top: 1px solid #cbd5e1;
+      background: #f8fafc;
+    }
+    .signatures-wrapper {
+      break-inside: avoid;
+      page-break-inside: avoid;
+      margin-top: 18px;
+    }
+    .sign-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+    .sign-box {
+      padding: 6px;
+      text-align: center;
+      font-size: 12.5px;
+      line-height: 1.6;
+    }
+    .sign-center {
+      margin-top: 14px;
+      display: flex;
+      justify-content: center;
+    }
+    .sign-center .sign-box {
+      width: 68%;
+      max-width: 390px;
+    }
+    @media print {
+      body {
+        background: #ffffff;
+        padding: 0;
+      }
+      .no-print {
+        display: none !important;
+      }
+      .page-sheet {
+        width: 100%;
+        min-height: auto;
+        margin: 0;
+        padding: 0;
+        box-shadow: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  ${
+    showTopToolbar
+      ? `<div class="toolbar no-print">
+          <div>
+            <strong>รายงานบันทึกรอยรอบตัวรถ (${escapeDamageHtml(scopeLabel)})</strong>
+            <span style="font-size:12px; color:#cbd5e1; margin-left:8px;">จำนวน ${items.length} จุด · ประจำวันที่ ${escapeDamageHtml(dateParts.day)} ${escapeDamageHtml(dateParts.month)} ${escapeDamageHtml(dateParts.year)}</span>
+          </div>
+          <button type="button" class="toolbar-btn" onclick="window.print()">พิมพ์ / บันทึกเป็น .PDF (A4)</button>
+        </div>`
+      : ''
+  }
+  <div class="page-sheet">
+    <div class="doc-ref">
+      <span>${singleItem ? `เลขที่อ้างอิง: ${escapeDamageHtml(singleItem.id)}` : `ขอบเขตรายงาน: ${escapeDamageHtml(scopeLabel)}`}</span>
+      <span>พิมพ์รายงานเมื่อ: ${escapeDamageHtml(printTimestamp)}</span>
+    </div>
+
+    <div class="doc-header">
+      <div class="doc-title">รายงานบันทึกรอยรอบตัวรถและจุดความเสียหาย</div>
+      <div class="doc-org">${escapeDamageHtml(ORGANIZATION_NAME)}</div>
+      <div class="doc-date">
+        ประจำวันที่ <strong>${escapeDamageHtml(dateParts.day)}</strong> เดือน <strong>${escapeDamageHtml(dateParts.month)}</strong> พ.ศ. <strong>${escapeDamageHtml(dateParts.year)}</strong>
+      </div>
+    </div>
+
+    <table class="meta-table">
+      <tbody>
+        <tr>
+          <td style="width:52%;">
+            <div><strong>รถปฏิบัติการกู้ชีพ:</strong> ${escapeDamageHtml(scopeLabel)}</div>
+            <div><strong>จำนวนจุดความเสียหายที่รายงาน:</strong> <strong>${items.length} จุด</strong></div>
+            <div><strong>สรุปสถานะการซ่อมบำรุง:</strong> <strong style="color:#b45309;">รอซ่อม ${pendingCount} จุด</strong> · <strong style="color:#15803d;">ซ่อมแล้ว ${resolvedCount} จุด</strong></div>
+          </td>
+          <td style="width:48%;">
+            <div><strong>ผู้ตรวจ / ผู้บันทึกข้อมูล:</strong> ${escapeDamageHtml(uniqueInspectors.length > 0 ? uniqueInspectors.join(', ') : signerName)}</div>
+            <div><strong>เลขไมล์ขณะรายงาน:</strong> ${singleItem?.odometerAtReport ? `${singleItem.odometerAtReport.toLocaleString()} กิโลเมตร` : 'ตามรายการที่บันทึก'}</div>
+            <div><strong>วัน-เวลาออกรายงาน:</strong> ${escapeDamageHtml(printTimestamp)}</div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="section-heading">ส่วนที่ 1 ตารางสรุปรายการรอยรอบตัวรถและจุดความเสียหาย</div>
+    <table class="dmg-table">
+      <thead>
+        <tr>
+          <th style="width:6%; text-align:center;">ลำดับ</th>
+          <th style="width:14%; text-align:left;">รหัสรถ / ทะเบียน</th>
+          <th style="width:16%; text-align:left;">ตำแหน่งบนตัวรถ</th>
+          <th style="width:18%; text-align:left;">ประเภทความเสียหาย</th>
+          <th style="width:22%; text-align:left;">รายละเอียดรอย</th>
+          <th style="width:13%; text-align:left;">บันทึกเมื่อ</th>
+          <th style="width:11%; text-align:center;">สถานะ</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${tableRowsHtml}
+      </tbody>
+    </table>
+
+    <div class="section-heading">ส่วนที่ 2 ภาพถ่ายหลักฐานประกอบจุดความเสียหาย</div>
+    ${evidenceBlocksHtml}
+
+    <div class="signatures-wrapper">
+      <div class="sign-grid">
+        <div class="sign-box">
+          <div style="height:28px;"></div>
+          <div>ลงชื่อ.....................................................................</div>
+          <div style="font-weight:700;">( ${escapeDamageHtml(signerName)} )</div>
+          <div>เจ้าหน้าที่ผู้ตรวจบันทึกรอยตัวรถ</div>
+          <div>วันที่............เดือน........................พ.ศ. ......................</div>
+        </div>
+        <div class="sign-box">
+          <div style="height:28px;"></div>
+          <div>ผู้ตรวจสอบ.....................................................................</div>
+          <div style="font-weight:700;">( นายวสันต์ วรรณเผือก )</div>
+          <div>ตำแหน่ง เจ้าพนักงานป้องกันและบรรเทาสาธารณภัยปฏิบัติงาน</div>
+          <div>วันที่............เดือน........................พ.ศ. ......................</div>
+        </div>
+      </div>
+
+      <div class="sign-center">
+        <div class="sign-box">
+          <div style="font-weight:700;">จึงเรียนมาเพื่อโปรดทราบ</div>
+          <div style="height:28px;"></div>
+          <div>ลงชื่อ.....................................................................</div>
+          <div style="font-weight:700; white-space:pre;">(        นายนิยม   สังข์เอียด        )</div>
+          <div>นายกองค์การบริหารส่วนตำบลหงษ์เจริญ</div>
+          <div>วันที่............เดือน........................พ.ศ. .......................</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
+  };
+
+  const waitAndTriggerPrint = async (
+    targetWindow: Window,
+    targetDoc: Document,
+    items: VehicleDamageItem[],
+    onDone?: () => void
+  ) => {
+    const previousTitle = document.title;
+    try {
+      document.title = getSafeDamagePdfFilename(items);
+      if ((targetDoc as any).fonts?.ready) {
+        await Promise.race([
+          (targetDoc as any).fonts.ready,
+          new Promise((res) => setTimeout(res, 1500)),
+        ]);
+      }
+      const imgs = Array.from(targetDoc.querySelectorAll('img'));
+      if (imgs.length > 0) {
+        await Promise.race([
+          Promise.all(
+            imgs.map(
+              (img) =>
+                new Promise<void>((resolve) => {
+                  if (img.complete) return resolve();
+                  img.addEventListener('load', () => resolve(), { once: true });
+                  img.addEventListener('error', () => resolve(), { once: true });
+                })
+            )
+          ),
+          new Promise((res) => setTimeout(res, 3000)),
+        ]);
+      }
+      targetWindow.focus();
+      targetWindow.print();
+      setPrintStatus('เปิดหน้าต่างบันทึกเป็น .PDF / สั่งพิมพ์แล้ว');
+    } catch {
+      window.print();
+    } finally {
+      document.title = previousTitle;
+      onDone?.();
+    }
+  };
+
+  const handlePrintDamagePdf = (items: VehicleDamageItem[]) => {
+    if (!items || items.length === 0) return;
+    try {
+      setPrintStatus('กำลังจัดรูปแบบเอกสาร A4 และเตรียมภาพหลักฐาน...');
+      const htmlContent = buildDamageReportHtml(items, false);
+      const printFrame = document.createElement('iframe');
+      printFrame.setAttribute(
+        'style',
+        'visibility:hidden; height:0; width:0; position:absolute; left:-9999px; bottom:0;'
+      );
+      document.body.appendChild(printFrame);
+
+      const frameDoc = printFrame.contentDocument || printFrame.contentWindow?.document;
+      if (frameDoc && printFrame.contentWindow) {
+        frameDoc.open();
+        frameDoc.write(htmlContent);
+        frameDoc.close();
+        setTimeout(() => {
+          void waitAndTriggerPrint(printFrame.contentWindow!, frameDoc, items, () => {
+            setTimeout(() => {
+              if (document.body.contains(printFrame)) {
+                document.body.removeChild(printFrame);
+              }
+              setPrintStatus(null);
+            }, 2500);
+          });
+        }, 350);
+      } else {
+        setPrintStatus(null);
+      }
+    } catch {
+      setPrintStatus(null);
+      window.print();
+    }
+  };
+
+  const handleOpenDamageStandaloneTab = (items: VehicleDamageItem[]) => {
+    if (!items || items.length === 0) return;
+    try {
+      const htmlContent = buildDamageReportHtml(items, true);
+      const win = window.open('', '_blank');
+      if (win) {
+        win.document.open();
+        win.document.write(htmlContent);
+        win.document.close();
+      } else {
+        handlePrintDamagePdf(items);
+      }
+    } catch {
+      handlePrintDamagePdf(items);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Top Header */}
@@ -325,14 +985,29 @@ export const VehicleDamageView: React.FC<VehicleDamageViewProps> = ({
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => handleOpenAddModal()}
-          className="inline-flex items-center gap-2 rounded-xl bg-sky-600 px-4 py-2.5 text-xs font-bold text-white shadow-sm hover:bg-sky-500 transition-all"
-        >
-          <Plus className="h-4 w-4" />
-          <span>บันทึกรอยรอบตัวรถใหม่</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => handleOpenReportModal(filteredRecords)}
+            disabled={filteredRecords.length === 0}
+            className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-xs font-bold text-slate-800 shadow-sm hover:bg-slate-50 disabled:opacity-45 disabled:cursor-not-allowed transition-all dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+            title="ดูตัวอย่างรายงานและบันทึกเป็นไฟล์ .PDF ขนาด A4 รูปแบบราชการ"
+          >
+            <FileDown className="h-4 w-4 text-sky-600 dark:text-sky-400" />
+            <span>พิมพ์รายงาน .PDF ({filteredRecords.length})</span>
+          </button>
+
+          {currentUser.role !== 'executive' && (
+            <button
+              type="button"
+              onClick={() => handleOpenAddModal()}
+              className="inline-flex items-center gap-2 rounded-xl bg-sky-600 px-4 py-2.5 text-xs font-bold text-white shadow-sm hover:bg-sky-500 transition-all"
+            >
+              <Plus className="h-4 w-4" />
+              <span>บันทึกรอยรอบตัวรถใหม่</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* KPI Cards Strip */}
@@ -559,25 +1234,26 @@ export const VehicleDamageView: React.FC<VehicleDamageViewProps> = ({
                   )}
 
                   {/* Metadata & Actions */}
-                  <div className="border-t border-slate-100 pt-3 dark:border-slate-800 flex items-center justify-between text-[11px] text-slate-500">
+                  <div className="border-t border-slate-100 pt-3 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
                     <div className="flex items-center gap-1">
                       <User className="h-3.5 w-3.5 text-slate-400" />
                       <span className="truncate max-w-[130px]">{item.inspectorName}</span>
                     </div>
 
-                    <div className="flex items-center gap-2">
-                      {currentUser.role === 'admin' && (item.driveFolderUrl || item.drivePhotoUrl) && (
-                        <a
-                          href={item.driveFolderUrl || item.drivePhotoUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-sky-50 px-2 py-1 text-xs font-semibold text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-300"
-                          title="เปิดดูรูปภาพใน Google Drive"
-                        >
-                          <ExternalLink className="h-3 w-3" />
-                          <span>Drive</span>
-                        </a>
-                      )}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {(currentUser.role === 'admin' || currentUser.role === 'executive') &&
+                        (item.driveFolderUrl || item.drivePhotoUrl) && (
+                          <a
+                            href={item.driveFolderUrl || item.drivePhotoUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-sky-50 px-2 py-1 text-xs font-semibold text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-300"
+                            title="เปิดดูรูปภาพใน Google Drive"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            <span>Drive</span>
+                          </a>
+                        )}
 
                       <button
                         type="button"
@@ -591,15 +1267,29 @@ export const VehicleDamageView: React.FC<VehicleDamageViewProps> = ({
 
                       <button
                         type="button"
-                        onClick={() => handleOpenEditModal(item)}
-                        className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-sky-50 px-2 py-1 text-xs font-medium text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-300"
-                        title="แก้ไขข้อมูลและรูปภาพรอยนี้"
+                        onClick={() =>
+                          handleOpenReportModal([item], `${item.vehicleCode} · ${item.positionArea}`)
+                        }
+                        className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-2 py-1 text-xs font-semibold text-white hover:bg-slate-800 dark:bg-sky-600 dark:hover:bg-sky-500"
+                        title="ดูแบบฟอร์มราชการและบันทึกจุดนี้เป็น .PDF ขนาด A4"
                       >
-                        <Pencil className="h-3 w-3" />
-                        <span>แก้ไข</span>
+                        <FileDown className="h-3 w-3" />
+                        <span>.PDF</span>
                       </button>
 
-                      {onUpdateDamageStatus && (
+                      {currentUser.role !== 'executive' && (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEditModal(item)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-sky-50 px-2 py-1 text-xs font-medium text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-300"
+                          title="แก้ไขข้อมูลและรูปภาพรอยนี้"
+                        >
+                          <Pencil className="h-3 w-3" />
+                          <span>แก้ไข</span>
+                        </button>
+                      )}
+
+                      {onUpdateDamageStatus && currentUser.role !== 'executive' ? (
                         <button
                           type="button"
                           onClick={() => onUpdateDamageStatus(item.id, !item.resolved)}
@@ -613,6 +1303,17 @@ export const VehicleDamageView: React.FC<VehicleDamageViewProps> = ({
                           <CheckCircle2 className="h-3 w-3" />
                           <span>{item.resolved ? 'ซ่อมแล้ว' : 'รอซ่อม'}</span>
                         </button>
+                      ) : (
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold border ${
+                            item.resolved
+                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300'
+                              : 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300'
+                          }`}
+                        >
+                          <CheckCircle2 className="h-3 w-3" />
+                          <span>{item.resolved ? 'ซ่อมแล้ว' : 'รอซ่อม'}</span>
+                        </span>
                       )}
 
                       {currentUser.role === 'admin' && (
@@ -1000,6 +1701,281 @@ export const VehicleDamageView: React.FC<VehicleDamageViewProps> = ({
                   : 'บันทึกรอยรอบตัวรถ'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Printable Official Government A4 Report Modal */}
+      {reportModalItems && reportModalItems.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-3 sm:p-6 backdrop-blur-sm overflow-y-auto">
+          <div className="my-auto w-full max-w-5xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-6 py-4 bg-slate-50 dark:border-slate-800 dark:bg-slate-850">
+              <div className="flex items-center gap-2.5">
+                <div className="rounded-lg bg-sky-100 p-2 text-sky-700 dark:bg-sky-950 dark:text-sky-300">
+                  <FileDown className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                    พิมพ์ / บันทึกเป็น .PDF รายงานบันทึกรอยรอบตัวรถ ({reportModalTitle})
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    จำนวน {reportModalItems.length} จุด · เลือกปลายทางเป็น &ldquo;บันทึกเป็น PDF (Save as PDF)&rdquo; ขนาด A4
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {printStatus && (
+                  <span className="text-xs font-medium text-sky-600 animate-pulse">{printStatus}</span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => handlePrintDamagePdf(reportModalItems)}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-sky-600 px-3.5 py-2 text-xs font-bold text-white shadow-sm hover:bg-sky-500 active:scale-95 transition-all"
+                  title="พิมพ์หรือบันทึกเป็นไฟล์ .PDF ขนาด A4 รูปแบบราชการ"
+                >
+                  <Printer className="h-4 w-4" />
+                  <span>พิมพ์ / บันทึกเป็น .PDF</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleOpenDamageStandaloneTab(reportModalItems)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  title="เปิดหน้ากระดาษ A4 เต็มหน้าในแท็บใหม่เพื่อดูตัวอย่างก่อนบันทึก PDF"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  <span>เปิดหน้ากระดาษ A4</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReportModalItems(null)}
+                  className="rounded-lg p-2 text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+
+            {(() => {
+              const singleItem = reportModalItems.length === 1 ? reportModalItems[0] : undefined;
+              const dateParts = getDamageReportDateParts(singleItem);
+              const scopeLabel = getReportScopeLabel(reportModalItems);
+              const pendingCount = reportModalItems.filter((d) => !d.resolved).length;
+              const resolvedCount = reportModalItems.filter((d) => d.resolved).length;
+              const uniqueInspectors = Array.from(
+                new Set(reportModalItems.map((d) => d.inspectorName).filter(Boolean))
+              );
+              const signerName =
+                singleItem?.inspectorName ||
+                (uniqueInspectors.length === 1 ? uniqueInspectors[0] : currentUser?.name) ||
+                'เจ้าหน้าที่ผู้ตรวจเช็ค';
+
+              return (
+                <div
+                  className="max-h-[78vh] overflow-y-auto p-6 sm:p-10 bg-white text-slate-950 space-y-4"
+                  style={{ fontFamily: "'Sarabun', 'Prompt', sans-serif" }}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-700">
+                    <span>
+                      {singleItem
+                        ? `เลขที่อ้างอิง: ${singleItem.id}`
+                        : `ขอบเขตรายงาน: ${scopeLabel}`}
+                    </span>
+                    <span>จำนวนจุดที่รายงาน: {reportModalItems.length} จุด</span>
+                  </div>
+
+                  <div className="border-b-[3px] border-double border-slate-900 pb-3 text-center">
+                    <h2 className="text-base sm:text-lg font-bold text-slate-950">
+                      รายงานบันทึกรอยรอบตัวรถและจุดความเสียหาย
+                    </h2>
+                    <p className="text-sm sm:text-base font-bold mt-0.5 text-slate-950">
+                      {ORGANIZATION_NAME}
+                    </p>
+                    <p className="text-xs sm:text-sm mt-1 text-slate-900">
+                      ประจำวันที่ <span className="font-bold underline px-1">{dateParts.day}</span>{' '}
+                      เดือน <span className="font-bold underline px-1">{dateParts.month}</span>{' '}
+                      พ.ศ. <span className="font-bold underline px-1">{dateParts.year}</span>
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 border border-slate-700 text-xs bg-white">
+                    <div className="space-y-1 p-2.5 sm:border-r border-b sm:border-b-0 border-slate-700">
+                      <p>
+                        <span className="font-bold">รถปฏิบัติการกู้ชีพ:</span> {scopeLabel}
+                      </p>
+                      <p>
+                        <span className="font-bold">จำนวนจุดความเสียหายที่รายงาน:</span>{' '}
+                        <span className="font-bold">{reportModalItems.length} จุด</span>
+                      </p>
+                      <p>
+                        <span className="font-bold">สรุปสถานะการซ่อมบำรุง:</span>{' '}
+                        <span className="font-bold text-amber-700">รอซ่อม {pendingCount} จุด</span>
+                        {' · '}
+                        <span className="font-bold text-emerald-700">ซ่อมแล้ว {resolvedCount} จุด</span>
+                      </p>
+                    </div>
+                    <div className="space-y-1 p-2.5">
+                      <p>
+                        <span className="font-bold">ผู้ตรวจ / ผู้บันทึกข้อมูล:</span>{' '}
+                        {uniqueInspectors.length > 0 ? uniqueInspectors.join(', ') : signerName}
+                      </p>
+                      <p>
+                        <span className="font-bold">เลขไมล์ขณะรายงาน:</span>{' '}
+                        {singleItem?.odometerAtReport
+                          ? `${singleItem.odometerAtReport.toLocaleString()} กิโลเมตร`
+                          : 'ตามรายการที่บันทึก'}
+                      </p>
+                      <p>
+                        <span className="font-bold">หน่วยงานจัดทำเอกสาร:</span> {ORGANIZATION_NAME}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h4 className="text-xs sm:text-sm font-bold text-slate-950 border-l-[3px] border-slate-900 pl-2 mb-2">
+                      ส่วนที่ 1 ตารางสรุปรายการรอยรอบตัวรถและจุดความเสียหาย
+                    </h4>
+                    <div className="overflow-x-auto">
+                      <table className="w-full border-collapse border border-slate-700 text-xs">
+                        <thead>
+                          <tr className="bg-slate-200 text-slate-950">
+                            <th className="border border-slate-700 p-1.5 text-center w-10 font-bold">ลำดับ</th>
+                            <th className="border border-slate-700 p-1.5 text-left w-28 font-bold">รหัสรถ / ทะเบียน</th>
+                            <th className="border border-slate-700 p-1.5 text-left w-32 font-bold">ตำแหน่งบนตัวรถ</th>
+                            <th className="border border-slate-700 p-1.5 text-left w-36 font-bold">ประเภทความเสียหาย</th>
+                            <th className="border border-slate-700 p-1.5 text-left font-bold">รายละเอียดรอย</th>
+                            <th className="border border-slate-700 p-1.5 text-left w-28 font-bold">บันทึกเมื่อ</th>
+                            <th className="border border-slate-700 p-1.5 text-center w-24 font-bold">สถานะ</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {reportModalItems.map((item, idx) => {
+                            const sev = SEVERITY_LABELS[item.severity] || SEVERITY_LABELS.minor_scratch;
+                            return (
+                              <tr key={item.id}>
+                                <td className="border border-slate-600 p-1.5 text-center">{idx + 1}</td>
+                                <td className="border border-slate-600 p-1.5">
+                                  <div className="font-bold">{item.vehicleCode}</div>
+                                  <div className="text-[11px] text-slate-600">{item.plateNumber}</div>
+                                </td>
+                                <td className="border border-slate-600 p-1.5 font-bold">{item.positionArea}</td>
+                                <td className="border border-slate-600 p-1.5">{sev.label}</td>
+                                <td className="border border-slate-600 p-1.5">{item.description}</td>
+                                <td className="border border-slate-600 p-1.5 text-[11px]">
+                                  <div>{item.createdAt}</div>
+                                  <div className="text-slate-600">โดย: {item.inspectorName}</div>
+                                </td>
+                                <td className="border border-slate-600 p-1.5 text-center font-bold whitespace-nowrap">
+                                  {item.resolved ? (
+                                    <span className="text-emerald-700">✓ ซ่อมบำรุงแล้ว</span>
+                                  ) : (
+                                    <span className="text-amber-700">⚠ รอซ่อมสี</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h4 className="text-xs sm:text-sm font-bold text-slate-950 border-l-[3px] border-slate-900 pl-2 mb-2">
+                      ส่วนที่ 2 ภาพถ่ายหลักฐานประกอบจุดความเสียหาย
+                    </h4>
+                    <div className="space-y-3">
+                      {reportModalItems.map((item, idx) => {
+                        const sev = SEVERITY_LABELS[item.severity] || SEVERITY_LABELS.minor_scratch;
+                        const allPhotos: Array<{ label: string; primary?: string; driveUrl?: string }> = [
+                          {
+                            label: `ภาพหลัก: ${item.positionArea}`,
+                            primary: item.photoUrl,
+                            driveUrl: item.drivePhotoUrl,
+                          },
+                          ...(item.additionalPhotos || []).map((photo, pIdx) => ({
+                            label: `มุมเพิ่มเติม #${pIdx + 1}: ${item.positionArea}`,
+                            primary: photo,
+                            driveUrl: item.driveAdditionalPhotoUrls?.[pIdx],
+                          })),
+                        ];
+
+                        return (
+                          <div key={item.id} className="border border-slate-700">
+                            <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-200 border-b border-slate-700 px-3 py-1.5 text-xs">
+                              <span>
+                                <strong>จุดที่ {idx + 1}:</strong> {item.vehicleCode} ({item.plateNumber}) —{' '}
+                                <strong>{item.positionArea}</strong>
+                              </span>
+                              <span>
+                                {sev.label} |{' '}
+                                <strong className={item.resolved ? 'text-emerald-700' : 'text-amber-700'}>
+                                  {item.resolved ? '✓ ซ่อมบำรุงแล้ว' : '⚠ รอซ่อมสี/ซ่อมบำรุง'}
+                                </strong>
+                              </span>
+                            </div>
+                            <div className="bg-slate-50 border-b border-slate-300 px-3 py-1.5 text-[11.5px] text-slate-900">
+                              <strong>รายละเอียด:</strong> {item.description}
+                              {item.odometerAtReport ? ` | เลขไมล์: ${item.odometerAtReport.toLocaleString()} กม.` : ''}
+                              {` | บันทึกเมื่อ: ${item.createdAt} (${item.inspectorName})`}
+                            </div>
+                            <div
+                              className={`grid gap-3 p-3 bg-white ${
+                                allPhotos.length === 1 ? 'grid-cols-1 max-w-md mx-auto' : 'grid-cols-1 sm:grid-cols-2'
+                              }`}
+                            >
+                              {allPhotos.map((p, pIdx) => (
+                                <div key={pIdx} className="border border-slate-400 bg-white text-center">
+                                  <DamageReportPhotoImg
+                                    primary={p.primary}
+                                    driveUrl={p.driveUrl}
+                                    positionArea={item.positionArea}
+                                    description={item.description || item.vehicleCode}
+                                    alt={p.label}
+                                    className="w-full h-48 sm:h-52 object-cover bg-slate-100"
+                                  />
+                                  <div className="border-t border-slate-300 bg-slate-50 py-1 px-2 text-[11px] font-bold">
+                                    {p.label}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-6 pt-6 text-xs sm:text-[13px] text-center text-slate-950">
+                    <div className="p-2 leading-relaxed">
+                      <div className="h-9" />
+                      <p>ลงชื่อ.....................................................................</p>
+                      <p className="font-bold mt-1">( {signerName} )</p>
+                      <p className="text-[11.5px]">เจ้าหน้าที่ผู้ตรวจบันทึกรอยตัวรถ</p>
+                      <p className="text-[11.5px]">วันที่............เดือน........................พ.ศ. ......................</p>
+                    </div>
+                    <div className="p-2 leading-relaxed">
+                      <div className="h-9" />
+                      <p>ผู้ตรวจสอบ.....................................................................</p>
+                      <p className="font-bold mt-1">( นายวสันต์ วรรณเผือก )</p>
+                      <p className="text-[11.5px]">ตำแหน่ง เจ้าพนักงานป้องกันและบรรเทาสาธารณภัยปฏิบัติงาน</p>
+                      <p className="text-[11.5px]">วันที่............เดือน........................พ.ศ. ......................</p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex justify-center text-slate-950">
+                    <div className="w-full max-w-md p-2 text-xs sm:text-[13px] text-center leading-relaxed">
+                      <p className="font-bold">จึงเรียนมาเพื่อโปรดทราบ</p>
+                      <div className="h-9" />
+                      <p>ลงชื่อ.....................................................................</p>
+                      <p className="font-bold mt-1 whitespace-pre">(        นายนิยม   สังข์เอียด        )</p>
+                      <p className="text-xs">นายกองค์การบริหารส่วนตำบลหงษ์เจริญ</p>
+                      <p className="text-[11.5px]">วันที่............เดือน........................พ.ศ. .......................</p>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}

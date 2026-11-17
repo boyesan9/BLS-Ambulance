@@ -20,9 +20,7 @@ export const StaffModal: React.FC<StaffModalProps> = ({
   const [role, setRole] = useState<UserRole>('staff');
   const [position, setPosition] = useState('');
   const [department, setDepartment] = useState('');
-  const [phone, setPhone] = useState('');
   const [status, setStatus] = useState<UserStatus>('active');
-  const [email, setEmail] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -32,19 +30,19 @@ export const StaffModal: React.FC<StaffModalProps> = ({
       setEmployeeId(staffToEdit.employeeId);
       setRole(staffToEdit.role);
       setPosition(staffToEdit.position || '');
-      setDepartment(staffToEdit.department || '');
-      setPhone(staffToEdit.phone || '');
+      setDepartment(
+        staffToEdit.department === 'ชุดปฏิบัติการที่ 2'
+          ? 'ชุดปฏิบัติการที่ 2'
+          : 'ชุดปฏิบัติการที่ 1'
+      );
       setStatus(staffToEdit.status || 'active');
-      setEmail(staffToEdit.email || '');
     } else {
       setName('');
       setEmployeeId(`EMT-${Math.floor(10000 + Math.random() * 90000)}`);
       setRole('staff');
       setPosition('เจ้าหน้าที่กู้ชีพฉุกเฉิน (EMT-B)');
-      setDepartment('เวรปฏิบัติการ BLS');
-      setPhone('');
+      setDepartment('ชุดปฏิบัติการที่ 1');
       setStatus('active');
-      setEmail('');
     }
   }, [staffToEdit, isOpen]);
 
@@ -63,11 +61,17 @@ export const StaffModal: React.FC<StaffModalProps> = ({
       name: name.trim(),
       employeeId: employeeId.trim(),
       role,
-      position: position.trim() || (role === 'admin' ? 'ผู้ดูแลระบบยานพาหนะ' : 'เจ้าหน้าที่กู้ชีพฉุกเฉิน'),
-      department: department.trim() || 'ฝ่ายปฏิบัติการกู้ชีพ BLS',
-      phone: phone.trim() || '-',
+      position:
+        position.trim() ||
+        (role === 'admin'
+          ? 'ผู้ดูแลระบบยานพาหนะ'
+          : role === 'executive'
+          ? 'ผู้บริหาร / ผู้บังคับบัญชา'
+          : 'เจ้าหน้าที่กู้ชีพฉุกเฉิน'),
+      department: department.trim() || 'ชุดปฏิบัติการที่ 1',
+      phone: staffToEdit?.phone || '-',
       status,
-      email: email.trim() || `${name.trim().replace(/\s+/g, '.').toLowerCase()}@ems-fleet.go.th`,
+      email: staffToEdit?.email || '',
       avatarUrl: staffToEdit?.avatarUrl || '',
     };
 
@@ -147,15 +151,16 @@ export const StaffModal: React.FC<StaffModalProps> = ({
 
             <div>
               <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
-                สังกัด / ฝ่ายงาน
+                ชุดปฏิบัติการ
               </label>
-              <input
-                type="text"
+              <select
                 value={department}
                 onChange={(e) => setDepartment(e.target.value)}
-                placeholder="เช่น เวรปฏิบัติการ BLS"
-                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 shadow-sm focus:border-sky-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-              />
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 shadow-sm focus:border-sky-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+              >
+                <option value="ชุดปฏิบัติการที่ 1">ชุดปฏิบัติการที่ 1</option>
+                <option value="ชุดปฏิบัติการที่ 2">ชุดปฏิบัติการที่ 2</option>
+              </select>
             </div>
           </div>
 
@@ -170,6 +175,7 @@ export const StaffModal: React.FC<StaffModalProps> = ({
                 className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 shadow-sm focus:border-sky-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
               >
                 <option value="staff">พนักงานทั่วไป (Staff)</option>
+                <option value="executive">ผู้บริหาร (Executive)</option>
                 <option value="admin">ผู้ดูแลระบบ (Admin)</option>
               </select>
             </div>
@@ -187,34 +193,6 @@ export const StaffModal: React.FC<StaffModalProps> = ({
                 <option value="on_leave">พักเวร / ลา (On Leave)</option>
                 <option value="inactive">ระงับการใช้งาน (Inactive)</option>
               </select>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
-                เบอร์โทรศัพท์ติดต่อ
-              </label>
-              <input
-                type="text"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                placeholder="08X-XXX-XXXX"
-                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 shadow-sm focus:border-sky-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
-                อีเมลประจำตำแหน่ง
-              </label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="name@ems-fleet.go.th"
-                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 shadow-sm focus:border-sky-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-              />
             </div>
           </div>
 

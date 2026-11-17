@@ -218,6 +218,7 @@ export const InspectionForm: React.FC<InspectionFormProps> = ({
       plateNumber: selectedVehicle.plateNumber,
       inspectorName: activeInspector.name,
       inspectorRole: activeInspector.role,
+      inspectorDepartment: activeInspector.department || '',
       uploadTimestamp: formattedUploadTimestamp,
       shift: selectedShift,
       shiftLabel: shiftOption ? shiftOption.label : 'เวร 24 ชั่วโมง',
@@ -299,7 +300,14 @@ export const InspectionForm: React.FC<InspectionFormProps> = ({
               </p>
             )}
             <p className="text-[11px] text-slate-400 mt-1">
-              ตำแหน่ง: {activeInspector.position || (activeInspector.role === 'admin' ? 'ผู้ดูแลระบบ (Admin)' : 'เจ้าหน้าที่เวร (Staff)')} · รหัส: {activeInspector.employeeId}
+              ตำแหน่ง:{' '}
+              {activeInspector.position ||
+                (activeInspector.role === 'admin'
+                  ? 'ผู้ดูแลระบบ (Admin)'
+                  : activeInspector.role === 'executive'
+                  ? 'ผู้บริหาร (Executive)'
+                  : 'เจ้าหน้าที่เวร (Staff)')}{' '}
+              · รหัส: {activeInspector.employeeId}
             </p>
           </div>
 

@@ -21,6 +21,7 @@ import {
   Lock,
   PackageCheck,
   PackagePlus,
+  Briefcase,
 } from 'lucide-react';
 
 export type AppViewMode = 'form' | 'equipment' | 'requisition' | 'dashboard' | 'damage' | 'fuel';
@@ -103,22 +104,32 @@ export const Navbar: React.FC<NavbarProps> = ({
     {
       id: 'dashboard' as AppViewMode,
       category: 'manage',
-      label: currentUser.role === 'admin' ? 'แดชบอร์ดผู้ดูแล' : 'แดชบอร์ดภาพรวม',
+      label:
+        currentUser.role === 'admin'
+          ? 'แดชบอร์ดผู้ดูแล'
+          : currentUser.role === 'executive'
+          ? 'แดชบอร์ดผู้บริหาร'
+          : 'แดชบอร์ดภาพรวม',
       navLabel: 'แดชบอร์ด',
-      subLabel: 'สถิติ/กองรถ/เวร',
+      subLabel: currentUser.role === 'executive' ? 'ภาพรวมทุกระบบ' : 'สถิติ/กองรถ/เวร',
       icon: LayoutDashboard,
       badge: null,
     },
   ];
 
+  const visibleNavItems =
+    currentUser.role === 'executive'
+      ? navItems.filter((item) => item.id !== 'form')
+      : navItems;
+
   const navCategories = [
     {
       key: 'check',
-      title: 'ตรวจ & เบิก',
+      title: currentUser.role === 'executive' ? 'อุปกรณ์ & เบิกจ่าย' : 'ตรวจ & เบิก',
       dotColor: 'bg-sky-500',
       activeClasses: 'bg-sky-600 text-white shadow-sm shadow-sky-600/25 dark:bg-sky-500 dark:text-white',
       activeIconClasses: 'text-white',
-      items: navItems.filter((i) => i.category === 'check'),
+      items: visibleNavItems.filter((i) => i.category === 'check'),
     },
     {
       key: 'vehicle',
@@ -126,15 +137,15 @@ export const Navbar: React.FC<NavbarProps> = ({
       dotColor: 'bg-amber-500',
       activeClasses: 'bg-amber-500 text-white shadow-sm shadow-amber-500/25 dark:bg-amber-500 dark:text-white',
       activeIconClasses: 'text-white',
-      items: navItems.filter((i) => i.category === 'vehicle'),
+      items: visibleNavItems.filter((i) => i.category === 'vehicle'),
     },
     {
       key: 'manage',
-      title: 'บริหารจัดการ',
+      title: currentUser.role === 'executive' ? 'ภาพรวมผู้บริหาร' : 'บริหารจัดการ',
       dotColor: 'bg-emerald-500',
       activeClasses: 'bg-slate-900 text-white shadow-sm shadow-slate-900/20 dark:bg-emerald-600 dark:text-white',
       activeIconClasses: 'text-white',
-      items: navItems.filter((i) => i.category === 'manage'),
+      items: visibleNavItems.filter((i) => i.category === 'manage'),
     },
   ];
 
@@ -153,7 +164,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* Brand Logo & Title */}
           <div className="flex items-center gap-2.5 shrink-0">
             <button
-              onClick={() => handleNavClick('form')}
+              onClick={() => handleNavClick(currentUser.role === 'executive' ? 'dashboard' : 'form')}
               className="flex items-center gap-2.5 text-left group transition-transform active:scale-95"
               title="กลับสู่หน้าหลัก"
             >
@@ -293,6 +304,23 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <span>(Admin)</span>
                 </span>
               </div>
+            ) : currentUser.role === 'executive' ? (
+              <div className="flex items-center gap-1.5">
+                <span className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[11px] font-bold text-indigo-800 dark:border-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-300 shadow-2xs">
+                  <Briefcase className="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400" />
+                  <span className="hidden xs:inline">ผู้บริหาร</span>
+                  <span>(Executive)</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onSwitchRole('admin')}
+                  className="hidden lg:inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600 hover:bg-amber-50 hover:text-amber-700 hover:border-amber-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 transition-colors"
+                  title="เข้าสู่ระบบผู้ดูแล (Admin)"
+                >
+                  <Lock className="h-3 w-3" />
+                  <span>Admin</span>
+                </button>
+              </div>
             ) : (
               <div className="flex items-center gap-1.5">
                 <span className="inline-flex items-center gap-1.5 rounded-xl border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-800 dark:border-sky-800 dark:bg-sky-950/50 dark:text-sky-300">
@@ -319,7 +347,12 @@ export const Navbar: React.FC<NavbarProps> = ({
                   {currentUser.name}
                 </p>
                 <p className="text-[10px] text-slate-400 truncate max-w-[120px]">
-                  {currentUser.position || (currentUser.role === 'admin' ? 'ผู้ดูแลระบบ (Admin)' : 'เจ้าหน้าที่เวร')}
+                  {currentUser.position ||
+                    (currentUser.role === 'admin'
+                      ? 'ผู้ดูแลระบบ (Admin)'
+                      : currentUser.role === 'executive'
+                      ? 'ผู้บริหาร (Executive)'
+                      : 'เจ้าหน้าที่เวร')}
                 </p>
               </div>
             </div>
@@ -355,8 +388,8 @@ export const Navbar: React.FC<NavbarProps> = ({
         aria-label="แถบเมนูหลักสำหรับโทรศัพท์"
         className="lg:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-slate-200/90 bg-white/95 dark:border-slate-800/90 dark:bg-slate-900/95 backdrop-blur-lg shadow-2xl px-2 py-1 safe-area-bottom"
       >
-        <div className="grid grid-cols-7 gap-0.5 max-w-xl mx-auto">
-          {navItems.map((item) => {
+        <div className={`grid ${visibleNavItems.length === 5 ? 'grid-cols-6' : 'grid-cols-7'} gap-0.5 max-w-xl mx-auto`}>
+          {visibleNavItems.map((item) => {
             const Icon = item.icon;
             const isActive = currentView === item.id;
             return (
@@ -463,6 +496,8 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <div className="flex h-11 w-11 items-center justify-center rounded-full bg-sky-100 font-bold text-sky-700 dark:bg-sky-950 dark:text-sky-300">
                     {currentUser.role === 'admin' ? (
                       <Shield className="h-6 w-6 text-amber-600 dark:text-amber-400" />
+                    ) : currentUser.role === 'executive' ? (
+                      <Briefcase className="h-6 w-6 text-indigo-600 dark:text-indigo-400" />
                     ) : (
                       <User className="h-6 w-6 text-sky-600 dark:text-sky-400" />
                     )}
@@ -472,7 +507,9 @@ export const Navbar: React.FC<NavbarProps> = ({
                       {currentUser.name}
                     </h4>
                     <p className="text-xs text-slate-500 dark:text-slate-400">
-                      {currentUser.employeeId || 'ID: Staff'} · {currentUser.position || 'เจ้าหน้าที่กู้ชีพ'}
+                      {currentUser.employeeId || 'ID: Staff'} ·{' '}
+                      {currentUser.position ||
+                        (currentUser.role === 'executive' ? 'ผู้บริหาร' : 'เจ้าหน้าที่กู้ชีพ')}
                     </p>
                   </div>
                 </div>
@@ -480,10 +517,16 @@ export const Navbar: React.FC<NavbarProps> = ({
                   className={`rounded-lg px-2.5 py-1 text-[10px] font-bold ${
                     currentUser.role === 'admin'
                       ? 'border border-amber-300 bg-amber-100/60 text-amber-800 dark:border-amber-700 dark:bg-amber-950/80 dark:text-amber-300'
+                      : currentUser.role === 'executive'
+                      ? 'border border-indigo-300 bg-indigo-100/60 text-indigo-800 dark:border-indigo-700 dark:bg-indigo-950/80 dark:text-indigo-300'
                       : 'border border-sky-200 bg-sky-100/60 text-sky-800 dark:border-sky-800 dark:bg-sky-950/80 dark:text-sky-300'
                   }`}
                 >
-                  {currentUser.role === 'admin' ? 'ผู้ดูแลระบบ (Admin)' : 'พนักงานทั่วไป (Staff)'}
+                  {currentUser.role === 'admin'
+                    ? 'ผู้ดูแลระบบ (Admin)'
+                    : currentUser.role === 'executive'
+                    ? 'ผู้บริหาร (Executive)'
+                    : 'พนักงานทั่วไป (Staff)'}
                 </span>
               </div>
 
@@ -579,7 +622,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider px-1">
                 ไปยังหน้าต่างๆ
               </span>
-              {navItems.map((item) => {
+              {visibleNavItems.map((item) => {
                 const Icon = item.icon;
                 const isActive = currentView === item.id;
                 return (
@@ -623,7 +666,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
             {/* Role Switching & Logout Actions */}
             <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2">
-              {currentUser.role === 'staff' ? (
+              {currentUser.role !== 'admin' && (
                 <button
                   type="button"
                   onClick={() => {
@@ -635,7 +678,21 @@ export const Navbar: React.FC<NavbarProps> = ({
                   <Shield className="h-4 w-4 text-amber-600" />
                   <span>เข้าสู่ระบบผู้ดูแล (Admin Login)</span>
                 </button>
-              ) : (
+              )}
+              {currentUser.role !== 'executive' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileDrawerOpen(false);
+                    onSwitchRole('executive');
+                  }}
+                  className="w-full flex items-center justify-center gap-2 p-2.5 rounded-xl border border-indigo-200 bg-indigo-50 text-xs font-bold text-indigo-800 hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-300"
+                >
+                  <Briefcase className="h-4 w-4 text-indigo-600" />
+                  <span>สลับเป็นโหมดผู้บริหาร (Executive View)</span>
+                </button>
+              )}
+              {currentUser.role !== 'staff' && (
                 <button
                   type="button"
                   onClick={() => {

@@ -1,10 +1,14 @@
 import React, { useState } from 'react';
 import {
   AmbulanceVehicle,
+  EquipmentInspectionRecord,
+  EquipmentRequisitionRecord,
+  FuelLogRecord,
   InspectionRecord,
   UserProfile,
   UserRole,
   UserStatus,
+  VehicleDamageItem,
   VehicleStatus,
 } from '../types';
 import {
@@ -28,6 +32,16 @@ import {
   FolderSync,
   ExternalLink,
   Camera,
+  Briefcase,
+  LayoutDashboard,
+  PackageCheck,
+  PackagePlus,
+  Car,
+  Fuel,
+  ArrowRight,
+  X,
+  Gauge,
+  Calendar,
 } from 'lucide-react';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 import {
@@ -57,6 +71,13 @@ interface AdminDashboardProps {
   spreadsheetUrl?: string;
   onExportCsv: () => void;
   onPrintInspection?: (record: InspectionRecord) => void;
+  equipmentInspections?: EquipmentInspectionRecord[];
+  equipmentRequisitions?: EquipmentRequisitionRecord[];
+  damageRecords?: VehicleDamageItem[];
+  fuelLogs?: FuelLogRecord[];
+  onNavigateView?: (
+    view: 'form' | 'equipment' | 'requisition' | 'dashboard' | 'damage' | 'fuel'
+  ) => void;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
@@ -80,14 +101,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   spreadsheetUrl,
   onExportCsv,
   onPrintInspection,
+  equipmentInspections = [],
+  equipmentRequisitions = [],
+  damageRecords = [],
+  fuelLogs = [],
+  onNavigateView,
 }) => {
-  const [activeTab, setActiveTab] = useState<'history' | 'photos_gallery' | 'vehicles' | 'staff'>('history');
+  const isAdmin = currentUser.role === 'admin';
+  const isExecutive = currentUser.role === 'executive';
+
+  const [activeTab, setActiveTab] = useState<
+    'overview' | 'history' | 'photos_gallery' | 'vehicles' | 'staff'
+  >(() => (currentUser.role === 'executive' ? 'overview' : 'history'));
+
+  React.useEffect(() => {
+    if (currentUser.role === 'executive') {
+      setActiveTab('overview');
+    }
+  }, [currentUser.role]);
+
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [filterShift, setFilterShift] = useState<string>('all');
   const [photoFilterVehicle, setPhotoFilterVehicle] = useState<string>('all');
   const [photoSearchDate, setPhotoSearchDate] = useState('');
   const [staffSearchTerm, setStaffSearchTerm] = useState('');
+  const [viewVehicleDetail, setViewVehicleDetail] = useState<AmbulanceVehicle | null>(null);
 
   // Delete modal state
   const [deleteTarget, setDeleteTarget] = useState<{
@@ -108,6 +147,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const activeStaff = staffList.filter((s) => s.status === 'active' || !s.status).length;
   const onLeaveStaff = staffList.filter((s) => s.status === 'on_leave').length;
   const adminCount = staffList.filter((s) => s.role === 'admin').length;
+  const executiveCount = staffList.filter((s) => s.role === 'executive').length;
+
+  // Multi-module KPIs for Executive Overview
+  const eqReadyCount = equipmentInspections.filter((e) => e.overallStatus === 'ready').length;
+  const eqIncompleteCount = equipmentInspections.filter((e) => e.overallStatus === 'incomplete').length;
+  const eqCriticalCount = equipmentInspections.filter((e) => e.overallStatus === 'critical').length;
+
+  const reqPendingCount = equipmentRequisitions.filter((r) => r.status === 'pending').length;
+  const reqApprovedCount = equipmentRequisitions.filter((r) => r.status === 'approved').length;
+  const reqDispensedCount = equipmentRequisitions.filter((r) => r.status === 'dispensed').length;
+
+  const damageUnresolvedCount = damageRecords.filter((d) => !d.resolved).length;
+  const damageResolvedCount = damageRecords.filter((d) => d.resolved).length;
+
+  const totalFuelDistance = fuelLogs.reduce((sum, l) => sum + (l.distanceDriven || 0), 0);
+  const totalFuelLiters = fuelLogs.reduce((sum, l) => sum + (l.liters || 0), 0);
+  const totalFuelCost = fuelLogs.reduce((sum, l) => sum + (l.totalCost || 0), 0);
+  const avgFuelKmPerL =
+    totalFuelDistance > 0 && totalFuelLiters > 0
+      ? (totalFuelDistance / totalFuelLiters).toFixed(2)
+      : '-';
 
   // Inspections in last 24h
   const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
@@ -172,20 +232,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {/* Top Header / Action Bar */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-bold text-slate-900 dark:text-white">
-            {currentUser.role === 'admin'
-              ? 'แดชบอร์ดผู้ดูแลระบบยานพาหนะและบุคลากร (Admin Console)'
-              : 'แดชบอร์ดภาพรวมรถกู้ชีพ BLS และประวัติการตรวจ (Staff Dashboard)'}
+          <h2 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
+            {isExecutive && <Briefcase className="h-5 w-5 text-indigo-600 dark:text-indigo-400 shrink-0" />}
+            <span>
+              {isAdmin
+                ? 'แดชบอร์ดผู้ดูแลระบบยานพาหนะและบุคลากร (Admin Console)'
+                : isExecutive
+                ? 'แดชบอร์ดผู้บริหาร — ภาพรวมทุกระบบและรายละเอียดกองรถ (Executive Console)'
+                : 'แดชบอร์ดภาพรวมรถกู้ชีพ BLS และประวัติการตรวจ (Staff Dashboard)'}
+            </span>
           </h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            {currentUser.role === 'admin'
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            {isAdmin
               ? 'ภาพรวมความพร้อมของรถกู้ชีพ BLS ส่วนกลาง · ระบบจัดการพนักงาน · สถิติและการซิงค์ข้อมูล'
+              : isExecutive
+              ? 'ติดตามภาพรวมความพร้อมกองรถ อุปกรณ์ BLS ใบเบิก รอยรอบตัวรถ น้ำมัน พร้อมตรวจสอบรายละเอียดและพิมพ์รายงาน .PDF'
               : 'ภาพรวมสถานะความพร้อมของรถกู้ชีพส่วนกลาง · ประวัติการตรวจสภาพประจำเวร · พิมพ์ใบรายงานผล'}
           </p>
         </div>
 
         <div className="flex items-center gap-2.5">
-          {currentUser.role === 'admin' && (
+          {isAdmin && (
             <button
               type="button"
               onClick={onOpenGoogleSheetsModal}
@@ -196,14 +263,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </button>
           )}
 
-          <button
-            type="button"
-            onClick={onOpenNewInspection}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-sky-600 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-sky-500"
-          >
-            <Plus className="h-4 w-4" />
-            <span>เริ่มตรวจสภาพรถใหม่</span>
-          </button>
+          {isExecutive && (
+            <span className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950/50 dark:text-indigo-300">
+              <Eye className="h-4 w-4" />
+              <span>สิทธิ์ผู้บริหาร (ดูข้อมูล & รายละเอียดทั้งหมด)</span>
+            </span>
+          )}
+
+          {!isExecutive && (
+            <button
+              type="button"
+              onClick={onOpenNewInspection}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-sky-600 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-sky-500"
+            >
+              <Plus className="h-4 w-4" />
+              <span>เริ่มตรวจสภาพรถใหม่</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -276,7 +352,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </span>
             <Users className="h-5 w-5 text-sky-500" />
           </div>
-          <p className="mt-1 text-[11px] text-slate-400">พักเวร {onLeaveStaff} · ผู้ดูแล {adminCount}</p>
+          <p className="mt-1 text-[11px] text-slate-400">
+            พักเวร {onLeaveStaff} · ผู้บริหาร {executiveCount} · ผู้ดูแล {adminCount}
+          </p>
         </div>
 
         {/* Readiness Rate */}
@@ -301,9 +379,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       {/* Main Tab Navigation */}
       <div className="flex items-center gap-2 border-b border-slate-200 pb-2.5 dark:border-slate-800 overflow-x-auto scrollbar-thin">
+        {(isExecutive || isAdmin) && (
+          <button
+            onClick={() => setActiveTab('overview')}
+            className={`flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition-all whitespace-nowrap ${
+              activeTab === 'overview'
+                ? 'bg-indigo-600 text-white shadow-sm dark:bg-indigo-500'
+                : 'text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
+            }`}
+          >
+            <LayoutDashboard className="h-3.5 w-3.5" />
+            <span>ภาพรวมทุกระบบ (แดชบอร์ด)</span>
+          </button>
+        )}
+
         <button
           onClick={() => setActiveTab('history')}
-          className={`flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition-all ${
+          className={`flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition-all whitespace-nowrap ${
             activeTab === 'history'
               ? 'bg-slate-900 text-white shadow-sm dark:bg-sky-500'
               : 'text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
@@ -314,7 +406,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
         <button
           onClick={() => setActiveTab('photos_gallery')}
-          className={`flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition-all ${
+          className={`flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition-all whitespace-nowrap ${
             activeTab === 'photos_gallery'
               ? 'bg-slate-900 text-white shadow-sm dark:bg-sky-500'
               : 'text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
@@ -326,7 +418,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
         <button
           onClick={() => setActiveTab('vehicles')}
-          className={`flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition-all ${
+          className={`flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition-all whitespace-nowrap ${
             activeTab === 'vehicles'
               ? 'bg-slate-900 text-white shadow-sm dark:bg-sky-500'
               : 'text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
@@ -334,7 +426,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         >
           <Truck className="h-3.5 w-3.5" />
           <span>
-            {currentUser.role === 'admin'
+            {isAdmin
               ? `จัดการข้อมูลรถกู้ชีพ BLS (${vehicles.length})`
               : `รายการรถกู้ชีพส่วนกลาง (${vehicles.length})`}
           </span>
@@ -342,7 +434,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
         <button
           onClick={() => setActiveTab('staff')}
-          className={`flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition-all ${
+          className={`flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition-all whitespace-nowrap ${
             activeTab === 'staff'
               ? 'bg-slate-900 text-white shadow-sm dark:bg-sky-500'
               : 'text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
@@ -350,12 +442,428 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         >
           <Users className="h-3.5 w-3.5" />
           <span>
-            {currentUser.role === 'admin'
+            {isAdmin
               ? `ระบบจัดการพนักงาน (${staffList.length})`
               : `รายชื่อเจ้าหน้าที่ประจำการ (${staffList.length})`}
           </span>
         </button>
       </div>
+
+      {/* TAB 0: Executive / Multi-System Overview Hub */}
+      {activeTab === 'overview' && (
+        <div className="space-y-6">
+          {/* 4 Module Dashboard Summary Cards */}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {/* Module 1: Equipment Readiness */}
+            <div className="flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <div>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
+                      <PackageCheck className="h-4.5 w-4.5" />
+                    </div>
+                    <div>
+                      <h3 className="text-xs font-bold text-slate-900 dark:text-white">
+                        ตรวจความพร้อมอุปกรณ์ BLS
+                      </h3>
+                      <p className="text-[11px] text-slate-400">
+                        ทั้งหมด {equipmentInspections.length} ครั้ง
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid grid-cols-3 gap-2 rounded-xl bg-slate-50 p-2.5 text-center dark:bg-slate-850">
+                  <div>
+                    <span className="block text-[10px] text-slate-400">พร้อมใช้</span>
+                    <span className="font-mono text-sm font-extrabold text-emerald-600 dark:text-emerald-400">
+                      {eqReadyCount}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="block text-[10px] text-slate-400">ไม่ครบ</span>
+                    <span className="font-mono text-sm font-extrabold text-amber-600 dark:text-amber-400">
+                      {eqIncompleteCount}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="block text-[10px] text-slate-400">ชำรุด</span>
+                    <span className="font-mono text-sm font-extrabold text-red-600 dark:text-red-400">
+                      {eqCriticalCount}
+                    </span>
+                  </div>
+                </div>
+
+                {equipmentInspections[0] && (
+                  <p className="mt-2.5 text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                    ล่าสุด: {equipmentInspections[0].teamLabel} · {equipmentInspections[0].inspectDateFormatted}
+                  </p>
+                )}
+              </div>
+
+              {onNavigateView && (
+                <button
+                  type="button"
+                  onClick={() => onNavigateView('equipment')}
+                  className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+                >
+                  <span>ดูแดชบอร์ด & รายละเอียดอุปกรณ์</span>
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+
+            {/* Module 2: Equipment Requisitions */}
+            <div className="flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <div>
+                <div className="flex items-center gap-2">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-sky-100 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300">
+                    <PackagePlus className="h-4.5 w-4.5" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-900 dark:text-white">
+                      ใบเบิกอุปกรณ์และเวชภัณฑ์
+                    </h3>
+                    <p className="text-[11px] text-slate-400">
+                      ทั้งหมด {equipmentRequisitions.length} ใบเบิก
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid grid-cols-3 gap-2 rounded-xl bg-slate-50 p-2.5 text-center dark:bg-slate-850">
+                  <div>
+                    <span className="block text-[10px] text-slate-400">รออนุมัติ</span>
+                    <span className="font-mono text-sm font-extrabold text-amber-600 dark:text-amber-400">
+                      {reqPendingCount}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="block text-[10px] text-slate-400">อนุมัติแล้ว</span>
+                    <span className="font-mono text-sm font-extrabold text-sky-600 dark:text-sky-400">
+                      {reqApprovedCount}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="block text-[10px] text-slate-400">จ่ายแล้ว</span>
+                    <span className="font-mono text-sm font-extrabold text-emerald-600 dark:text-emerald-400">
+                      {reqDispensedCount}
+                    </span>
+                  </div>
+                </div>
+
+                {equipmentRequisitions[0] && (
+                  <p className="mt-2.5 text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                    ล่าสุด: {equipmentRequisitions[0].requisitionNo} · {equipmentRequisitions[0].requesterName}
+                  </p>
+                )}
+              </div>
+
+              {onNavigateView && (
+                <button
+                  type="button"
+                  onClick={() => onNavigateView('requisition')}
+                  className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-bold text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-300"
+                >
+                  <span>ดูแดชบอร์ด & รายละเอียดใบเบิก</span>
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+
+            {/* Module 3: Vehicle Damage */}
+            <div className="flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <div>
+                <div className="flex items-center gap-2">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300">
+                    <Car className="h-4.5 w-4.5" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-900 dark:text-white">
+                      รอยรอบตัวรถ & จุดเสียหาย
+                    </h3>
+                    <p className="text-[11px] text-slate-400">
+                      บันทึกสะสม {damageRecords.length} จุด
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-slate-50 p-2.5 text-center dark:bg-slate-850">
+                  <div>
+                    <span className="block text-[10px] text-slate-400">รอซ่อม / มีรอย</span>
+                    <span className="font-mono text-sm font-extrabold text-amber-600 dark:text-amber-400">
+                      {damageUnresolvedCount}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="block text-[10px] text-slate-400">ซ่อมสีแล้ว</span>
+                    <span className="font-mono text-sm font-extrabold text-emerald-600 dark:text-emerald-400">
+                      {damageResolvedCount}
+                    </span>
+                  </div>
+                </div>
+
+                {damageRecords[0] && (
+                  <p className="mt-2.5 text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                    ล่าสุด: {damageRecords[0].vehicleCode} · {damageRecords[0].positionArea}
+                  </p>
+                )}
+              </div>
+
+              {onNavigateView && (
+                <button
+                  type="button"
+                  onClick={() => onNavigateView('damage')}
+                  className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+                >
+                  <span>ดูรอยรอบตัวรถ & รายงาน .PDF</span>
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+
+            {/* Module 4: Fuel Log & Efficiency */}
+            <div className="flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <div>
+                <div className="flex items-center gap-2">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-100 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300">
+                    <Fuel className="h-4.5 w-4.5" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-900 dark:text-white">
+                      ประวัติเติมน้ำมัน & สิ้นเปลือง
+                    </h3>
+                    <p className="text-[11px] text-slate-400">
+                      เติมทั้งหมด {fuelLogs.length} ครั้ง
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid grid-cols-3 gap-2 rounded-xl bg-slate-50 p-2.5 text-center dark:bg-slate-850">
+                  <div>
+                    <span className="block text-[10px] text-slate-400">ระยะทาง</span>
+                    <span className="font-mono text-xs font-extrabold text-slate-800 dark:text-slate-200">
+                      {totalFuelDistance.toLocaleString()}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="block text-[10px] text-slate-400">กม./ลิตร</span>
+                    <span className="font-mono text-xs font-extrabold text-emerald-600 dark:text-emerald-400">
+                      {avgFuelKmPerL}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="block text-[10px] text-slate-400">ยอดรวม(฿)</span>
+                    <span className="font-mono text-xs font-extrabold text-sky-600 dark:text-sky-400">
+                      {totalFuelCost.toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+
+                {fuelLogs[0] && (
+                  <p className="mt-2.5 text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                    ล่าสุด: {fuelLogs[0].vehicleCode} · {fuelLogs[0].liters} ลิตร ({fuelLogs[0].fuelDate})
+                  </p>
+                )}
+              </div>
+
+              {onNavigateView && (
+                <button
+                  type="button"
+                  onClick={() => onNavigateView('fuel')}
+                  className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-300"
+                >
+                  <span>ดูแดชบอร์ดน้ำมัน & สลิป</span>
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Fleet Status Snapshot + Recent Inspections */}
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+            {/* Recent Vehicle Inspections */}
+            <div className="lg:col-span-7 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                    ผลการตรวจสภาพรถกู้ชีพ BLS ล่าสุด ({recentInspectionsCount} ครั้งใน 24 ชม.)
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    คลิก “ดูรายละเอียด” เพื่อดูรายการตรวจ 22 ข้อ และรูปถ่าย 4 ด้าน
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('photos_gallery')}
+                    className="rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                  >
+                    รูป 4 ด้านรายวัน
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('history')}
+                    className="rounded-lg bg-slate-900 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-slate-800 dark:bg-sky-600"
+                  >
+                    ดูทั้งหมด ({inspections.length})
+                  </button>
+                </div>
+              </div>
+
+              {inspections.length > 0 ? (
+                <div className="divide-y divide-slate-100 dark:divide-slate-800 mt-1">
+                  {inspections.slice(0, 6).map((rec) => (
+                    <div
+                      key={rec.id}
+                      className="flex flex-wrap items-center justify-between gap-2 py-2.5"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-xs font-bold text-sky-600 dark:text-sky-400">
+                            {rec.vehicleCode}
+                          </span>
+                          <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                            {rec.plateNumber}
+                          </span>
+                          {rec.overallStatus === 'normal' && (
+                            <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+                              ปกติ
+                            </span>
+                          )}
+                          {rec.overallStatus === 'issue_found' && (
+                            <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+                              พบปัญหา
+                            </span>
+                          )}
+                          {rec.overallStatus === 'needs_repair' && (
+                            <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300">
+                              ส่งซ่อม
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          {rec.uploadTimestamp} · ผู้ตรวจ: {rec.inspectorName} · ไมล์{' '}
+                          {rec.odometerReading ? rec.odometerReading.toLocaleString() : '-'} กม.
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        {onPrintInspection && (
+                          <button
+                            type="button"
+                            onClick={() => onPrintInspection(rec)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-sky-50 px-2 py-1 text-[11px] font-semibold text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-300"
+                          >
+                            <Printer className="h-3 w-3" />
+                            <span>.PDF</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => onViewRecordDetail(rec)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                        >
+                          <Eye className="h-3 w-3 text-sky-600" />
+                          <span>ดูรายละเอียด</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="py-10 text-center text-xs text-slate-400">
+                  ยังไม่มีประวัติการตรวจสภาพรถในระบบ
+                </div>
+              )}
+            </div>
+
+            {/* Fleet Status Overview */}
+            <div className="lg:col-span-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                    สถานะกองรถกู้ชีพ BLS ({vehicles.length} คัน)
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    คลิกที่รถเพื่อตรวจสอบข้อมูลรถและประวัติการตรวจ
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('vehicles')}
+                  className="rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                >
+                  กองรถทั้งหมด
+                </button>
+              </div>
+
+              {vehicles.length > 0 ? (
+                <div className="mt-3 space-y-2.5 max-h-[340px] overflow-y-auto pr-1">
+                  {vehicles.map((veh) => (
+                    <button
+                      key={veh.id}
+                      type="button"
+                      onClick={() =>
+                        isAdmin ? onOpenVehicleModal(veh) : setViewVehicleDetail(veh)
+                      }
+                      className="w-full flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-2.5 text-left hover:border-sky-300 hover:bg-sky-50/40 transition-all dark:border-slate-800 dark:bg-slate-850 dark:hover:border-sky-700"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <img
+                          src={
+                            toDisplayableDriveImageUrl(veh.imageUrl, veh.drivePhotoUrl) ||
+                            generateSvgCarPlaceholder(veh.code, veh.brandModel, '#0284c7')
+                          }
+                          alt={veh.code}
+                          className="h-11 w-16 rounded-lg object-cover shrink-0 border border-slate-200 dark:border-slate-700"
+                          referrerPolicy="no-referrer"
+                          onError={(e) => {
+                            const fallback = generateSvgCarPlaceholder(veh.code, veh.brandModel, '#0284c7');
+                            if (e.currentTarget.src !== fallback) e.currentTarget.src = fallback;
+                          }}
+                        />
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono text-xs font-bold text-sky-600 dark:text-sky-400">
+                              {veh.code}
+                            </span>
+                            <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                              {veh.plateNumber}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                            ไมล์ {veh.currentOdometer.toLocaleString()} กม. · ตรวจล่าสุด {veh.lastInspectionDate || '-'}
+                          </p>
+                        </div>
+                      </div>
+
+                      <span
+                        className={`shrink-0 rounded-md px-2 py-0.5 text-[10px] font-bold ${
+                          veh.status === 'available'
+                            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
+                            : veh.status === 'issue_found'
+                            ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
+                            : 'bg-red-100 text-red-800 dark:bg-red-950/60 dark:text-red-300'
+                        }`}
+                      >
+                        {veh.status === 'available'
+                          ? 'พร้อมใช้'
+                          : veh.status === 'issue_found'
+                          ? 'พบปัญหา'
+                          : 'ส่งซ่อม'}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="py-10 text-center text-xs text-slate-400">
+                  ยังไม่มีข้อมูลรถกู้ชีพในระบบ
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* TAB 1: Inspection History */}
       {activeTab === 'history' && (
@@ -465,7 +973,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     <th className="px-4 py-3">ผู้ตรวจเช็ค</th>
                     <th className="px-4 py-3">สถานะผลตรวจ</th>
                     <th className="px-4 py-3">รูป 4 ด้าน</th>
-                    {currentUser.role === 'admin' && (
+                    {(isAdmin || isExecutive) && (
                       <th className="px-4 py-3">Sheets & Drive</th>
                     )}
                     <th className="px-4 py-3 text-right">การจัดการ</th>
@@ -518,7 +1026,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               {rec.inspectorName}
                             </div>
                             <span className="text-[10px] text-slate-400">
-                              {rec.inspectorRole === 'admin' ? 'Admin' : 'พนักงานประจำเวร'}
+                              {rec.inspectorRole === 'admin'
+                                ? 'Admin'
+                                : rec.inspectorRole === 'executive'
+                                ? 'ผู้บริหาร'
+                                : 'พนักงานประจำเวร'}
                             </span>
                           </td>
 
@@ -555,7 +1067,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             </button>
                           </td>
 
-                          {currentUser.role === 'admin' && (
+                          {(isAdmin || isExecutive) && (
                             <td className="px-4 py-3.5">
                               <div className="flex flex-col gap-1 items-start">
                                 <span
@@ -631,7 +1143,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     })
                   ) : (
                     <tr>
-                      <td colSpan={currentUser.role === 'admin' ? 8 : 7} className="p-8 text-center text-slate-400">
+                      <td colSpan={isAdmin || isExecutive ? 8 : 7} className="p-8 text-center text-slate-400">
                         ไม่พบข้อมูลการตรวจตามเงื่อนไขที่ค้นหา
                       </td>
                     </tr>
@@ -866,8 +1378,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 {/* Vehicle Image */}
                 <div
                   className="relative aspect-[16/10] w-full overflow-hidden bg-slate-950/20 group cursor-pointer"
-                  onClick={() => onOpenVehicleModal(veh)}
-                  title="คลิกเพื่อแก้ไขข้อมูลหรือเปลี่ยนรูปรถ"
+                  onClick={() => (isAdmin ? onOpenVehicleModal(veh) : setViewVehicleDetail(veh))}
+                  title={isAdmin ? 'คลิกเพื่อแก้ไขข้อมูลหรือเปลี่ยนรูปรถ' : 'คลิกเพื่อดูรายละเอียดรถและประวัติล่าสุด'}
                 >
                   <img
                     src={
@@ -886,14 +1398,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end justify-center pb-2.5 pointer-events-none">
                     <span className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600/90 px-2.5 py-1 text-[11px] font-semibold text-white backdrop-blur-sm shadow-md">
-                      <Camera className="h-3.5 w-3.5 text-white" /> ใส่ / เปลี่ยนรูปรถ
+                      {isAdmin ? (
+                        <>
+                          <Camera className="h-3.5 w-3.5 text-white" /> ใส่ / เปลี่ยนรูปรถ
+                        </>
+                      ) : (
+                        <>
+                          <Eye className="h-3.5 w-3.5 text-white" /> ดูรายละเอียดรถ
+                        </>
+                      )}
                     </span>
                   </div>
                   <div className="absolute left-2.5 top-2.5 flex items-center gap-1.5">
                     <span className="rounded-md bg-slate-950/80 px-2 py-0.5 font-mono text-xs font-bold text-sky-400 backdrop-blur-sm">
                       {veh.code}
                     </span>
-                    {currentUser.role === 'admin' && veh.drivePhotoUrl && (
+                    {(isAdmin || isExecutive) && veh.drivePhotoUrl && (
                       <a
                         href={veh.drivePhotoUrl}
                         target="_blank"
@@ -994,8 +1514,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       </div>
                     </div>
                   ) : (
-                    <div className="border-t border-slate-100 pt-3 dark:border-slate-800 flex items-center justify-between">
-                      <span className="text-[11px] font-medium text-slate-500">สถานะความพร้อม:</span>
+                    <div className="border-t border-slate-100 pt-3 dark:border-slate-800 flex items-center justify-between gap-2">
                       <span
                         className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-bold ${
                           veh.status === 'available'
@@ -1011,6 +1530,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           ? 'พบปัญหา'
                           : 'ส่งซ่อม'}
                       </span>
+
+                      <button
+                        type="button"
+                        onClick={() => setViewVehicleDetail(veh)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                      >
+                        <Eye className="h-3 w-3 text-sky-600" />
+                        <span>ดูรายละเอียด</span>
+                      </button>
                     </div>
                   )}
                 </div>
@@ -1126,6 +1654,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-semibold text-sky-700 bg-sky-50 dark:bg-sky-950/40 dark:text-sky-300">
                               <Shield className="h-3 w-3" /> ผู้ดูแลระบบ (Admin)
                             </span>
+                          ) : staff.role === 'executive' ? (
+                            <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-semibold text-indigo-700 bg-indigo-50 dark:bg-indigo-950/40 dark:text-indigo-300">
+                              <Briefcase className="h-3 w-3" /> ผู้บริหาร (Executive)
+                            </span>
                           ) : (
                             <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-semibold text-slate-700 bg-slate-100 dark:bg-slate-800 dark:text-slate-300">
                               <UserCheck className="h-3 w-3" /> พนักงานทั่วไป (Staff)
@@ -1203,6 +1735,156 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Read-Only Vehicle Detail Modal (for Executive / Staff) */}
+      {viewVehicleDetail && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-3 sm:p-6 backdrop-blur-sm overflow-y-auto">
+          <div className="my-auto w-full max-w-2xl overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4 dark:border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <Truck className="h-5 w-5 text-sky-500" />
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                    รายละเอียดรถกู้ชีพ {viewVehicleDetail.code} · {viewVehicleDetail.plateNumber}
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    {viewVehicleDetail.brandModel} (ปี {viewVehicleDetail.year})
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setViewVehicleDetail(null)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="max-h-[80vh] overflow-y-auto p-6 space-y-5">
+              <div className="relative aspect-[16/9] w-full overflow-hidden rounded-2xl border border-slate-200 bg-slate-900 dark:border-slate-800">
+                <img
+                  src={
+                    toDisplayableDriveImageUrl(viewVehicleDetail.imageUrl, viewVehicleDetail.drivePhotoUrl) ||
+                    generateSvgCarPlaceholder(viewVehicleDetail.code, viewVehicleDetail.brandModel, '#0284c7')
+                  }
+                  alt={viewVehicleDetail.code}
+                  className="h-full w-full object-cover"
+                  referrerPolicy="no-referrer"
+                />
+                <div className="absolute right-3 top-3">
+                  <span
+                    className={`rounded-lg px-2.5 py-1 text-xs font-bold shadow ${
+                      viewVehicleDetail.status === 'available'
+                        ? 'bg-emerald-600 text-white'
+                        : viewVehicleDetail.status === 'issue_found'
+                        ? 'bg-amber-600 text-white'
+                        : 'bg-red-600 text-white'
+                    }`}
+                  >
+                    {viewVehicleDetail.status === 'available'
+                      ? 'พร้อมใช้งาน (ปกติ)'
+                      : viewVehicleDetail.status === 'issue_found'
+                      ? 'พบปัญหา (เฝ้าระวัง)'
+                      : 'อยู่ระหว่างซ่อม (งดใช้)'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+                <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-850">
+                  <span className="flex items-center gap-1 text-[11px] text-slate-400">
+                    <Gauge className="h-3 w-3 text-sky-500" /> เลขไมล์ล่าสุด
+                  </span>
+                  <p className="mt-1 font-mono text-sm font-bold text-slate-900 dark:text-white">
+                    {viewVehicleDetail.currentOdometer.toLocaleString()} กม.
+                  </p>
+                </div>
+                <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-850">
+                  <span className="flex items-center gap-1 text-[11px] text-slate-400">
+                    <Calendar className="h-3 w-3 text-sky-500" /> ตรวจสภาพล่าสุด
+                  </span>
+                  <p className="mt-1 font-bold text-slate-900 dark:text-white">
+                    {viewVehicleDetail.lastInspectionDate || '-'}
+                  </p>
+                </div>
+                <div className="col-span-2 sm:col-span-1 rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-850">
+                  <span className="flex items-center gap-1 text-[11px] text-slate-400">
+                    <UserCheck className="h-3 w-3 text-sky-500" /> ผู้ตรวจล่าสุด
+                  </span>
+                  <p className="mt-1 font-bold text-slate-900 dark:text-white truncate">
+                    {viewVehicleDetail.lastInspector || '-'}
+                  </p>
+                </div>
+              </div>
+
+              {viewVehicleDetail.notes && (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700 dark:border-slate-800 dark:bg-slate-850 dark:text-slate-300">
+                  <span className="font-bold text-slate-900 dark:text-white">หมายเหตุประจำรถ: </span>
+                  {viewVehicleDetail.notes}
+                </div>
+              )}
+
+              <div>
+                <h4 className="text-xs font-bold text-slate-800 dark:text-slate-200 mb-2">
+                  ประวัติการตรวจสภาพของ {viewVehicleDetail.code} ล่าสุด
+                </h4>
+                {(() => {
+                  const vehHistory = inspections
+                    .filter(
+                      (i) =>
+                        i.vehicleId === viewVehicleDetail.id ||
+                        i.vehicleCode === viewVehicleDetail.code
+                    )
+                    .slice(0, 5);
+                  if (vehHistory.length === 0) {
+                    return (
+                      <p className="rounded-xl border border-dashed border-slate-200 p-4 text-center text-xs text-slate-400 dark:border-slate-800">
+                        ยังไม่มีประวัติการตรวจสำหรับรถคันนี้
+                      </p>
+                    );
+                  }
+                  return (
+                    <div className="divide-y divide-slate-100 rounded-xl border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+                      {vehHistory.map((rec) => (
+                        <div
+                          key={rec.id}
+                          className="flex items-center justify-between gap-2 px-3 py-2.5 text-xs"
+                        >
+                          <div>
+                            <p className="font-semibold text-slate-900 dark:text-white">
+                              {rec.uploadTimestamp} · {rec.inspectorName}
+                            </p>
+                            <p className="text-[11px] text-slate-400">
+                              ไมล์ {rec.odometerReading.toLocaleString()} กม. ·{' '}
+                              {rec.overallStatus === 'normal'
+                                ? 'ปกติ'
+                                : rec.overallStatus === 'issue_found'
+                                ? 'พบปัญหา'
+                                : 'ส่งซ่อม'}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setViewVehicleDetail(null);
+                              onViewRecordDetail(rec);
+                            }}
+                            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                          >
+                            <Eye className="h-3 w-3 text-sky-600" />
+                            <span>ดูรายละเอียด</span>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </div>
             </div>
           </div>
         </div>

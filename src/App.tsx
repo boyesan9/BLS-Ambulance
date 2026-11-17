@@ -113,7 +113,10 @@ import { CheckCircle2, AlertCircle, ExternalLink, Copy } from 'lucide-react';
 export default function App() {
   const [currentUser, setCurrentUserState] = useState<UserProfile | null>(() => getCurrentUser());
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => !getLoggedOutFlag());
-  const [currentView, setCurrentView] = useState<AppViewMode>('form');
+  const [currentView, setCurrentView] = useState<AppViewMode>(() => {
+    const initialUser = getCurrentUser();
+    return initialUser?.role === 'executive' ? 'dashboard' : 'form';
+  });
 
   const [vehicles, setVehicles] = useState<AmbulanceVehicle[]>(() => getStoredVehicles());
   const [inspections, setInspections] = useState<InspectionRecord[]>(() => getStoredInspections());
@@ -284,9 +287,15 @@ export default function App() {
       const token = await getAccessToken();
       if (!token && !hasNoLoginBridge()) return;
 
+      const operatorRoleLabel =
+        currentUser?.role === 'admin'
+          ? 'Admin'
+          : currentUser?.role === 'executive'
+          ? 'Executive'
+          : 'Staff';
       const operatorName = googleUser?.email
         ? `${currentUser?.name || 'Admin'} (${googleUser.email})`
-        : `${currentUser?.name || 'Admin'} (${currentUser?.role === 'admin' ? 'Admin' : 'Staff'})`;
+        : `${currentUser?.name || 'Admin'} (${operatorRoleLabel})`;
 
       await appendAuditLogToSheet(
         spreadsheetId,
@@ -314,7 +323,9 @@ export default function App() {
       if (!prevUser) return prevUser;
       const userEmail = (prevUser.email || activeFbEmail || '').toLowerCase();
       const isDefaultPlaceholder =
-        prevUser.id === 'current-operator' || prevUser.id === 'current-admin';
+        prevUser.id === 'current-operator' ||
+        prevUser.id === 'current-admin' ||
+        prevUser.id === 'current-executive';
 
       const matched =
         syncedStaff.find((s) => s.id === prevUser.id) ||
@@ -900,7 +911,11 @@ export default function App() {
     if (enrichedUser.role === 'admin') {
       setIsAdminVerified(true);
       setCurrentView('dashboard');
+    } else if (enrichedUser.role === 'executive') {
+      setIsAdminVerified(false);
+      setCurrentView('dashboard');
     } else {
+      setIsAdminVerified(false);
       setCurrentView('form');
     }
 
@@ -937,13 +952,26 @@ export default function App() {
     }
   };
 
-  // Switch role handler (Admin <-> Staff): switching from Staff to Admin always requires passcode verification
+  // Switch role handler (Admin <-> Executive <-> Staff): switching to Admin always requires passcode verification
   const handleSwitchRole = (role: UserRole) => {
     if (role === 'admin') {
       if (currentUser?.role !== 'admin') {
         setAdminAuthModalOpen(true);
         return;
       }
+      setCurrentView('dashboard');
+    } else if (role === 'executive') {
+      setIsAdminVerified(false);
+      const updated: UserProfile = {
+        ...(currentUser || DEMO_USERS.executive),
+        role: 'executive',
+        position:
+          currentUser?.role === 'executive' && currentUser?.position
+            ? currentUser.position
+            : 'ผู้บริหาร / ผู้บังคับบัญชา',
+      };
+      setCurrentUserState(updated);
+      setCurrentUser(updated);
       setCurrentView('dashboard');
     } else {
       setIsAdminVerified(false);
@@ -2451,7 +2479,7 @@ export default function App() {
 
       {/* Main Body with bottom padding for mobile safe area & bottom tab bar */}
       <main className="mx-auto w-full max-w-7xl flex-1 px-3 sm:px-6 py-5 sm:py-6 pb-28 lg:pb-12">
-        {currentView === 'form' && (
+        {currentView === 'form' && currentUser.role !== 'executive' && (
           <InspectionForm
             currentUser={currentUser}
             vehicles={vehicles}
@@ -2485,7 +2513,8 @@ export default function App() {
           />
         )}
 
-        {currentView === 'dashboard' && (
+        {(currentView === 'dashboard' ||
+          (currentView === 'form' && currentUser.role === 'executive')) && (
           <AdminDashboard
             currentUser={currentUser}
             vehicles={vehicles}
@@ -2513,10 +2542,19 @@ export default function App() {
                 setGoogleSheetsModalOpen(true);
               }
             }}
-            spreadsheetUrl={currentUser.role === 'admin' ? googleSheetsConfig.spreadsheetUrl : undefined}
+            spreadsheetUrl={
+              currentUser.role === 'admin' || currentUser.role === 'executive'
+                ? googleSheetsConfig.spreadsheetUrl
+                : undefined
+            }
             onExportCsv={handleExportCsv}
             onPrintInspection={(rec) => setRecordToPrint(rec)}
             onClearAllSystemData={handleClearAllSystemData}
+            equipmentInspections={equipmentInspections}
+            equipmentRequisitions={equipmentRequisitions}
+            damageRecords={damageRecords}
+            fuelLogs={fuelLogs}
+            onNavigateView={setCurrentView}
           />
         )}
 
@@ -2546,6 +2584,7 @@ export default function App() {
       {recordToPrint && (
         <PrintReportView
           record={recordToPrint}
+          staffList={staffList}
           onClose={() => setRecordToPrint(null)}
         />
       )}
