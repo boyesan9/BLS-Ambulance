@@ -72,6 +72,7 @@ import {
   GENERATED_APPS_SCRIPT_CODE,
   getActiveAppsScriptUrl,
   hasNoLoginBridge,
+  validateAndNormalizeAppsScriptUrl,
 } from '../services/googleBridge';
 import { User } from 'firebase/auth';
 
@@ -193,6 +194,33 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
 
   const handleSaveBridgeUrl = () => {
     const cleanUrl = appsScriptUrl.trim();
+    if (cleanUrl) {
+      const { validUrl, error } = validateAndNormalizeAppsScriptUrl(cleanUrl);
+      if (!validUrl) {
+        setStatusMessage({
+          type: 'error',
+          text: error || 'ลิงก์ Apps Script ไม่ถูกต้อง',
+        });
+        return;
+      }
+      setAppsScriptUrl(validUrl);
+      onSaveConfig({
+        ...config,
+        spreadsheetId: cleanCurrentSheetId,
+        spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanCurrentSheetId}/edit`,
+        driveFolderId: cleanCurrentDriveId,
+        driveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentDriveId}`,
+        imageDriveFolderId: cleanCurrentImageDriveId,
+        imageDriveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentImageDriveId}`,
+        appsScriptUrl: validUrl,
+      });
+      setStatusMessage({
+        type: 'success',
+        text: 'บันทึก Apps Script Web App URL เรียบร้อยแล้ว ระบบพร้อมซิงค์ 2 ทางโดยไม่ต้องเข้า Google!',
+      });
+      return;
+    }
+
     onSaveConfig({
       ...config,
       spreadsheetId: cleanCurrentSheetId,
@@ -201,26 +229,26 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
       driveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentDriveId}`,
       imageDriveFolderId: cleanCurrentImageDriveId,
       imageDriveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentImageDriveId}`,
-      appsScriptUrl: cleanUrl,
+      appsScriptUrl: '',
     });
     setStatusMessage({
       type: 'success',
-      text: cleanUrl
-        ? 'บันทึก Apps Script Web App URL เรียบร้อยแล้ว ระบบพร้อมซิงค์ 2 ทางโดยไม่ต้องเข้า Google!'
-        : 'ล้างค่า Apps Script URL แล้ว (ระบบยังอ่านชีตสาธารณะและเชื่อมต่อ ID ปลายทางตามปกติ)',
+      text: 'ล้างค่า Apps Script URL แล้ว (ระบบยังอ่านชีตสาธารณะและเชื่อมต่อ ID ปลายทางตามปกติ)',
     });
   };
 
   const handleTestBridge = async () => {
     const cleanUrl = appsScriptUrl.trim();
-    if (!cleanUrl) {
+    const { validUrl, error } = validateAndNormalizeAppsScriptUrl(cleanUrl);
+    if (!validUrl) {
       setStatusMessage({
         type: 'error',
-        text: 'กรุณาวางลิงก์ Apps Script Web App (/exec) ก่อนทดสอบเชื่อมต่อ',
+        text: error || 'กรุณาวางลิงก์ Apps Script Web App (/exec) ก่อนทดสอบเชื่อมต่อ',
       });
       return;
     }
 
+    setAppsScriptUrl(validUrl);
     setIsTestingBridge(true);
     setStatusMessage(null);
     try {
@@ -232,7 +260,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
         driveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentDriveId}`,
         imageDriveFolderId: cleanCurrentImageDriveId,
         imageDriveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentImageDriveId}`,
-        appsScriptUrl: cleanUrl,
+        appsScriptUrl: validUrl,
       });
 
       const res = await callAppsScriptBridge<{
@@ -247,7 +275,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
           driveFolderId: cleanCurrentDriveId,
           imageDriveFolderId: cleanCurrentImageDriveId,
         },
-        cleanUrl
+        validUrl
       );
 
       setStatusMessage({

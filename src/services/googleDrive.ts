@@ -45,12 +45,34 @@ export function formatGoogleApiError(
   rawMessage: string,
   serviceLabel = 'Google API'
 ): { message: string; activationUrl?: string; isApiDisabled: boolean } {
-  const urlMatch = rawMessage.match(/https:\/\/console\.(?:developers|cloud)\.google\.com\/apis\/api\/[^\s)]+/);
-  const projectMatch = rawMessage.match(/project\s+(\d+)/i);
+  const normalized = (rawMessage || '').trim();
+  const lower = normalized.toLowerCase();
+
+  if (
+    lower === 'failed to fetch' ||
+    lower.includes('failed to fetch') ||
+    lower.includes('networkerror') ||
+    lower.includes('load failed') ||
+    lower.includes('err_network')
+  ) {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      return {
+        isApiDisabled: false,
+        message: `ไม่สามารถเชื่อมต่ออินเทอร์เน็ตเพื่อซิงค์ ${serviceLabel} ได้ (อุปกรณ์ออฟไลน์)`,
+      };
+    }
+    return {
+      isApiDisabled: false,
+      message: `เชื่อมต่อ ${serviceLabel} ไม่สำเร็จ (Failed to fetch) — กรุณาตรวจสอบอินเทอร์เน็ต, การตั้งค่า Apps Script (/exec แบบ "ทุกคน / Anyone") หรือกด "ทดสอบ" ในเมนูเชื่อมต่อ Google Sheets`,
+    };
+  }
+
+  const urlMatch = normalized.match(/https:\/\/console\.(?:developers|cloud)\.google\.com\/apis\/api\/[^\s)]+/);
+  const projectMatch = normalized.match(/project\s+(\d+)/i);
   const isDisabled =
-    rawMessage.includes('has not been used in project') ||
-    rawMessage.includes('it is disabled') ||
-    rawMessage.includes('SERVICE_DISABLED');
+    normalized.includes('has not been used in project') ||
+    normalized.includes('it is disabled') ||
+    normalized.includes('SERVICE_DISABLED');
 
   if (isDisabled) {
     const projectInfo = projectMatch ? ` (โปรเจกต์ ${projectMatch[1]})` : '';
@@ -64,7 +86,7 @@ export function formatGoogleApiError(
   return {
     isApiDisabled: false,
     activationUrl: urlMatch?.[0],
-    message: rawMessage,
+    message: normalized,
   };
 }
 

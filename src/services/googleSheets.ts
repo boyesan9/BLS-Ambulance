@@ -501,8 +501,8 @@ export async function syncVehiclesToSheet(
   accessToken: string
 ): Promise<void> {
   const nowStr = new Date().toLocaleString('th-TH');
-  if (!accessToken && getActiveAppsScriptUrl()) {
-    const bridgeRows = vehicles.map((v) => {
+  const buildBridgeRows = () =>
+    vehicles.map((v) => {
       const photoLink =
         v.drivePhotoUrl ||
         (v.imageUrl && !v.imageUrl.startsWith('data:') ? v.imageUrl : '') ||
@@ -527,80 +527,81 @@ export async function syncVehiclesToSheet(
         v.driveFolderUrl || '',
       ];
     });
+
+  const appsScriptUrl = getActiveAppsScriptUrl();
+  if (!accessToken && appsScriptUrl) {
     await callAppsScriptBridge('syncTab', {
       spreadsheetId,
       sheetTitle: VEHICLES_SHEET_TITLE,
       headers: VEHICLE_HEADERS,
-      rows: bridgeRows,
+      rows: buildBridgeRows(),
     });
     return;
   }
 
-  await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
+  try {
+    await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
 
-  // Ensure header row includes Drive photo columns (A1:M1)
-  await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+    // Ensure header row includes Drive photo columns (A1:M1)
+    const headerRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+        VEHICLES_SHEET_TITLE
+      )}!A1:M1?valueInputOption=USER_ENTERED`,
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ values: [VEHICLE_HEADERS] }),
+      }
+    );
+
+    if (!headerRes.ok) {
+      const errJson = await headerRes.json().catch(() => ({}));
+      throw new Error(
+        errJson.error?.message || `เกิดข้อผิดพลาดในการอัปเดตหัวตารางรถใน Google Sheets (${headerRes.status})`
+      );
+    }
+
+    const rows = buildBridgeRows();
+
+    // Pad empty rows to overwrite if fleet count decreased
+    const paddedRows = [...rows];
+    while (paddedRows.length < 50) {
+      paddedRows.push(new Array(13).fill(''));
+    }
+
+    const putUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
       VEHICLES_SHEET_TITLE
-    )}!A1:M1?valueInputOption=USER_ENTERED`,
-    {
+    )}!A2:M52?valueInputOption=USER_ENTERED`;
+
+    const response = await fetch(putUrl, {
       method: 'PUT',
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ values: [VEHICLE_HEADERS] }),
+      body: JSON.stringify({ values: paddedRows }),
+    });
+
+    if (!response.ok) {
+      const errJson = await response.json().catch(() => ({}));
+      throw new Error(
+        errJson.error?.message || `เกิดข้อผิดพลาดในการบันทึกรายการรถลง Google Sheets (${response.status})`
+      );
     }
-  );
-
-  const rows = vehicles.map((v) => {
-    const photoLink =
-      v.drivePhotoUrl ||
-      (v.imageUrl && !v.imageUrl.startsWith('data:') ? v.imageUrl : '') ||
-      '';
-    return [
-      v.code,
-      v.plateNumber,
-      v.brandModel || 'Toyota Commuter BLS',
-      v.year || '2024',
-      v.status === 'available'
-        ? 'พร้อมปฏิบัติการ'
-        : v.status === 'issue_found'
-        ? 'พบข้อบกพร่อง'
-        : 'งดใช้-ส่งซ่อมบำรุง',
-      v.currentOdometer || 0,
-      v.lastInspectionDate || '-',
-      v.lastInspector || '-',
-      v.notes || '',
-      v.id,
-      nowStr,
-      photoLink,
-      v.driveFolderUrl || '',
-    ];
-  });
-
-  // Pad empty rows to overwrite if fleet count decreased
-  const paddedRows = [...rows];
-  while (paddedRows.length < 50) {
-    paddedRows.push(new Array(13).fill(''));
-  }
-
-  const putUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
-    VEHICLES_SHEET_TITLE
-  )}!A2:M52?valueInputOption=USER_ENTERED`;
-
-  const response = await fetch(putUrl, {
-    method: 'PUT',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ values: paddedRows }),
-  });
-
-  if (!response.ok) {
-    const errJson = await response.json().catch(() => ({}));
-    throw new Error(errJson.error?.message || `เกิดข้อผิดพลาดในการบันทึกรายการรถลง Google Sheets (${response.status})`);
+  } catch (directErr) {
+    if (appsScriptUrl) {
+      await callAppsScriptBridge('syncTab', {
+        spreadsheetId,
+        sheetTitle: VEHICLES_SHEET_TITLE,
+        headers: VEHICLE_HEADERS,
+        rows: buildBridgeRows(),
+      });
+      return;
+    }
+    throw directErr;
   }
 }
 

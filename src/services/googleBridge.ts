@@ -36,18 +36,117 @@ export function hasNoLoginBridge(): boolean {
   return Boolean(getActiveAppsScriptUrl());
 }
 
+export function validateAndNormalizeAppsScriptUrl(rawUrl: string): {
+  validUrl?: string;
+  error?: string;
+} {
+  const trimmed = (rawUrl || '').trim();
+  if (!trimmed) {
+    return { error: 'ยังไม่ได้ระบุ Google Apps Script Web App URL' };
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return {
+      error:
+        'รูปแบบลิงก์ Apps Script ไม่ถูกต้อง — กรุณาวางลิงก์ที่ขึ้นต้นด้วย https://script.google.com/macros/s/.../exec',
+    };
+  }
+
+  if (parsed.hostname.includes('docs.google.com') || parsed.hostname.includes('drive.google.com')) {
+    return {
+      error:
+        'ลิงก์ที่วางคือลิงก์ Google Sheets หรือ Drive ไม่ใช่ลิงก์ Apps Script Web App (/exec)',
+    };
+  }
+
+  if (parsed.protocol !== 'https:' || parsed.hostname !== 'script.google.com') {
+    return {
+      error:
+        'ลิงก์ Apps Script ต้องเป็น https://script.google.com/macros/s/.../exec เท่านั้น',
+    };
+  }
+
+  const normalizedPath = parsed.pathname.replace(/^\/macros\/u\/\d+\//, '/macros/');
+  if (normalizedPath.endsWith('/dev')) {
+    return {
+      error:
+        'ลิงก์นี้เป็นลิงก์ทดสอบ (/dev) ซึ่งต้องล็อกอิน Google — กรุณาคัดลอกลิงก์ Web App ที่ลงท้าย /exec จากเมนู Deploy > Manage deployments',
+    };
+  }
+
+  if (normalizedPath.includes('/edit') || normalizedPath.startsWith('/home/')) {
+    return {
+      error:
+        'ลิงก์นี้เป็นหน้าแก้ไขโค้ด Apps Script — กรุณากด Deploy > รายการใหม่ > เว็บแอป เพื่อรับลิงก์ที่ลงท้าย /exec',
+    };
+  }
+
+  if (!/^\/macros\/s\/[a-zA-Z0-9_-]+\/exec$/.test(normalizedPath)) {
+    return {
+      error:
+        'URL ต้องเป็นลิงก์ Web App ที่ลงท้ายด้วย /exec (เช่น https://script.google.com/macros/s/.../exec)',
+    };
+  }
+
+  return { validUrl: `https://script.google.com${normalizedPath}` };
+}
+
+function parseAppsScriptResponseText(rawText: string, status: number, action: string): any {
+  const trimmed = (rawText || '').trim();
+  if (
+    trimmed.startsWith('<!DOCTYPE') ||
+    trimmed.startsWith('<html') ||
+    trimmed.includes('accounts.google.com') ||
+    trimmed.includes('ServiceLogin')
+  ) {
+    throw new Error(
+      'Apps Script ตอบกลับเป็นหน้าล็อกอิน Google — กรุณาไปที่ Deploy > Manage deployments แล้วตั้งค่า Who has access เป็น "ทุกคน (Anyone)"'
+    );
+  }
+
+  let data: any;
+  try {
+    data = trimmed ? JSON.parse(trimmed) : {};
+  } catch {
+    throw new Error(
+      `Apps Script ตอบกลับไม่ใช่ JSON (HTTP ${status}) — กรุณาตรวจสอบว่าได้กด Deploy เป็น Web App เวอร์ชันล่าสุดแล้ว`
+    );
+  }
+
+  if (data && data.ok === false) {
+    throw new Error(data.error || `Apps Script ทำงานไม่สำเร็จ (${action})`);
+  }
+
+  return data;
+}
+
+function isNetworkFetchError(err: unknown): boolean {
+  const msg = String((err as any)?.message || err || '').toLowerCase();
+  return (
+    err instanceof TypeError ||
+    msg.includes('failed to fetch') ||
+    msg.includes('networkerror') ||
+    msg.includes('load failed') ||
+    msg.includes('network request failed')
+  );
+}
+
 /**
  * Call the deployed Google Apps Script Web App (exec URL) without requiring browser Google OAuth.
- * Uses text/plain to avoid CORS preflight failures on Google Apps Script.
+ * Uses text/plain + credentials: omit to avoid CORS preflight failures, with automatic /api/apps-script proxy fallback.
  */
 export async function callAppsScriptBridge<T = any>(
   action: string,
   payload: Record<string, any> = {},
   overrideUrl?: string
 ): Promise<T> {
-  const url = (overrideUrl || getActiveAppsScriptUrl()).trim();
-  if (!url) {
-    throw new Error('ยังไม่ได้ระบุ Google Apps Script Web App URL');
+  const rawUrl = (overrideUrl || getActiveAppsScriptUrl()).trim();
+  const { validUrl, error } = validateAndNormalizeAppsScriptUrl(rawUrl);
+  if (!validUrl) {
+    throw new Error(error || 'ยังไม่ได้ระบุ Google Apps Script Web App URL');
   }
 
   const bodyPayload = {
@@ -58,25 +157,68 @@ export async function callAppsScriptBridge<T = any>(
     ...payload,
   };
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'text/plain;charset=utf-8',
-    },
-    body: JSON.stringify(bodyPayload),
-    redirect: 'follow',
-  });
+  try {
+    const res = await fetch(validUrl, {
+      method: 'POST',
+      mode: 'cors',
+      credentials: 'omit',
+      headers: {
+        'Content-Type': 'text/plain;charset=utf-8',
+      },
+      body: JSON.stringify(bodyPayload),
+      redirect: 'follow',
+    });
 
-  if (!res.ok) {
-    throw new Error(`Apps Script ตอบกลับสถานะผิดพลาด (${res.status})`);
+    const rawText = await res.text();
+    if (!res.ok) {
+      // Check if Google sent an HTML login page or JSON error
+      parseAppsScriptResponseText(rawText, res.status, action);
+      throw new Error(`Apps Script ตอบกลับสถานะผิดพลาด (${res.status})`);
+    }
+
+    return parseAppsScriptResponseText(rawText, res.status, action) as T;
+  } catch (directErr: any) {
+    if (!isNetworkFetchError(directErr)) {
+      throw directErr;
+    }
+
+    // Fallback through same-origin server proxy to bypass browser CORS/302 redirect blocks
+    try {
+      const proxyRes = await fetch('/api/apps-script', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          url: validUrl,
+          payload: bodyPayload,
+        }),
+      });
+
+      const contentType = (proxyRes.headers.get('content-type') || '').toLowerCase();
+      if (contentType.includes('application/json')) {
+        const proxyData = await proxyRes.json();
+        if (!proxyRes.ok || proxyData?.ok === false) {
+          throw new Error(
+            proxyData?.error || `Apps Script ตอบกลับสถานะผิดพลาด (${proxyRes.status})`
+          );
+        }
+        return proxyData as T;
+      }
+    } catch (proxyErr: any) {
+      if (!isNetworkFetchError(proxyErr) && proxyErr?.message) {
+        throw proxyErr;
+      }
+    }
+
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      throw new Error('ไม่สามารถเชื่อมต่ออินเทอร์เน็ตได้ (อุปกรณ์อยู่ในสถานะออฟไลน์)');
+    }
+
+    throw new Error(
+      'เชื่อมต่อ Google Apps Script ไม่สำเร็จ (CORS / ถูกเบราว์เซอร์บล็อก) — กรุณาตรวจสอบในเมนู Google Sheets ว่าได้ Deploy เป็น Web App (/exec) และตั้งค่า Who has access: "ทุกคน (Anyone)" แล้วกดปุ่ม "ทดสอบ"'
+    );
   }
-
-  const data = await res.json();
-  if (data && data.ok === false) {
-    throw new Error(data.error || `Apps Script ทำงานไม่สำเร็จ (${action})`);
-  }
-
-  return data as T;
 }
 
 /**

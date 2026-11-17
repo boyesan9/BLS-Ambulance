@@ -1388,7 +1388,7 @@ export default function App() {
       }
     }
 
-    const list = [...vehicles];
+    const list = [...initialVehList];
     const idx = list.findIndex((v) => v.id === vehicleToSave.id);
     if (idx >= 0) {
       list[idx] = vehicleToSave;
