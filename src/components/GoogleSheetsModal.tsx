@@ -59,6 +59,7 @@ import { uploadInspectionMediaToDrive, saveMasterDatabaseToDrive } from '../serv
 import { googleSignIn, getAccessToken } from '../services/firebaseAuth';
 import {
   DEFAULT_DRIVE_FOLDER_ID,
+  DEFAULT_IMAGE_DRIVE_FOLDER_ID,
   DEFAULT_SPREADSHEET_ID,
   getStoredDamageRecords,
   getStoredFuelLogs,
@@ -122,6 +123,9 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
 }) => {
   const [spreadsheetId, setSpreadsheetId] = useState(config.spreadsheetId || DEFAULT_SPREADSHEET_ID);
   const [driveFolderId, setDriveFolderId] = useState(config.driveFolderId || DEFAULT_DRIVE_FOLDER_ID);
+  const [imageDriveFolderId, setImageDriveFolderId] = useState(
+    config.imageDriveFolderId || DEFAULT_IMAGE_DRIVE_FOLDER_ID
+  );
   const [appsScriptUrl, setAppsScriptUrl] = useState(config.appsScriptUrl || getActiveAppsScriptUrl());
   const [isCreating, setIsCreating] = useState(false);
   const [isSyncingAll, setIsSyncingAll] = useState(false);
@@ -137,15 +141,24 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
     if (isOpen) {
       setSpreadsheetId(config.spreadsheetId || DEFAULT_SPREADSHEET_ID);
       setDriveFolderId(config.driveFolderId || DEFAULT_DRIVE_FOLDER_ID);
+      setImageDriveFolderId(config.imageDriveFolderId || DEFAULT_IMAGE_DRIVE_FOLDER_ID);
       setAppsScriptUrl(config.appsScriptUrl || getActiveAppsScriptUrl());
       setStatusMessage(null);
     }
-  }, [isOpen, config.spreadsheetId, config.driveFolderId, config.appsScriptUrl]);
+  }, [
+    isOpen,
+    config.spreadsheetId,
+    config.driveFolderId,
+    config.imageDriveFolderId,
+    config.appsScriptUrl,
+  ]);
 
   if (!isOpen || currentUser.role !== 'admin') return null;
 
   const cleanCurrentSheetId = extractGoogleResourceId(spreadsheetId) || DEFAULT_SPREADSHEET_ID;
   const cleanCurrentDriveId = extractGoogleResourceId(driveFolderId) || DEFAULT_DRIVE_FOLDER_ID;
+  const cleanCurrentImageDriveId =
+    extractGoogleResourceId(imageDriveFolderId) || DEFAULT_IMAGE_DRIVE_FOLDER_ID;
   const activeBridgeUrl = appsScriptUrl.trim();
   const isBridgeReady = Boolean(activeBridgeUrl || hasNoLoginBridge());
 
@@ -186,6 +199,8 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
       spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanCurrentSheetId}/edit`,
       driveFolderId: cleanCurrentDriveId,
       driveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentDriveId}`,
+      imageDriveFolderId: cleanCurrentImageDriveId,
+      imageDriveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentImageDriveId}`,
       appsScriptUrl: cleanUrl,
     });
     setStatusMessage({
@@ -215,6 +230,8 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
         spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanCurrentSheetId}/edit`,
         driveFolderId: cleanCurrentDriveId,
         driveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentDriveId}`,
+        imageDriveFolderId: cleanCurrentImageDriveId,
+        imageDriveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentImageDriveId}`,
         appsScriptUrl: cleanUrl,
       });
 
@@ -222,18 +239,20 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
         ok: boolean;
         spreadsheetName?: string;
         folderName?: string;
+        imageFolderName?: string;
       }>(
         'ping',
         {
           spreadsheetId: cleanCurrentSheetId,
           driveFolderId: cleanCurrentDriveId,
+          imageDriveFolderId: cleanCurrentImageDriveId,
         },
         cleanUrl
       );
 
       setStatusMessage({
         type: 'success',
-        text: `เชื่อมต่อสำเร็จโดยไม่ต้องล็อกอิน Google! ชีต: "${res.spreadsheetName || cleanCurrentSheetId}" · โฟลเดอร์ Drive: "${res.folderName || cleanCurrentDriveId}"`,
+        text: `เชื่อมต่อสำเร็จโดยไม่ต้องล็อกอิน Google! ชีต: "${res.spreadsheetName || cleanCurrentSheetId}" · Drive หลัก: "${res.folderName || cleanCurrentDriveId}" · โฟลเดอร์รูป ImageBLS: "${res.imageFolderName || cleanCurrentImageDriveId}"`,
       });
     } catch (err: any) {
       setStatusMessage({
@@ -284,6 +303,8 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
         spreadsheetUrl: res.spreadsheetUrl,
         driveFolderId: cleanCurrentDriveId,
         driveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentDriveId}`,
+        imageDriveFolderId: cleanCurrentImageDriveId,
+        imageDriveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentImageDriveId}`,
         appsScriptUrl: activeBridgeUrl || config.appsScriptUrl,
         sheetName: INSPECTION_SHEET_TITLE,
         lastSyncedAt: new Date().toLocaleTimeString('th-TH'),
@@ -366,6 +387,8 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
         spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanCurrentSheetId}/edit`,
         driveFolderId: cleanCurrentDriveId,
         driveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentDriveId}`,
+        imageDriveFolderId: cleanCurrentImageDriveId,
+        imageDriveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentImageDriveId}`,
         appsScriptUrl: activeBridgeUrl || config.appsScriptUrl,
       });
 
@@ -440,6 +463,8 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
         spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanCurrentSheetId}/edit`,
         driveFolderId: cleanCurrentDriveId,
         driveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentDriveId}`,
+        imageDriveFolderId: cleanCurrentImageDriveId,
+        imageDriveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentImageDriveId}`,
         appsScriptUrl: activeBridgeUrl || config.appsScriptUrl,
         lastSyncedAt: new Date().toLocaleTimeString('th-TH'),
       });
@@ -530,8 +555,11 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
   const handleSaveCustomIds = () => {
     const cleanSheet = extractGoogleResourceId(spreadsheetId) || DEFAULT_SPREADSHEET_ID;
     const cleanDrive = extractGoogleResourceId(driveFolderId) || DEFAULT_DRIVE_FOLDER_ID;
+    const cleanImageDrive =
+      extractGoogleResourceId(imageDriveFolderId) || DEFAULT_IMAGE_DRIVE_FOLDER_ID;
     setSpreadsheetId(cleanSheet);
     setDriveFolderId(cleanDrive);
+    setImageDriveFolderId(cleanImageDrive);
 
     onSaveConfig({
       ...config,
@@ -539,17 +567,20 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
       spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanSheet}/edit`,
       driveFolderId: cleanDrive,
       driveFolderUrl: `https://drive.google.com/drive/folders/${cleanDrive}`,
+      imageDriveFolderId: cleanImageDrive,
+      imageDriveFolderUrl: `https://drive.google.com/drive/folders/${cleanImageDrive}`,
       appsScriptUrl: activeBridgeUrl || config.appsScriptUrl,
     });
 
     setStatusMessage({
       type: 'success',
-      text: 'บันทึก Google Spreadsheet ID และ Google Drive Folder ID เรียบร้อยแล้ว',
+      text: 'บันทึก Spreadsheet ID, Drive Folder ID และ ImageBLS Folder ID เรียบร้อยแล้ว',
     });
   };
 
   const currentSheetUrl = `https://docs.google.com/spreadsheets/d/${cleanCurrentSheetId}/edit`;
   const currentDriveUrl = `https://drive.google.com/drive/folders/${cleanCurrentDriveId}`;
+  const currentImageDriveUrl = `https://drive.google.com/drive/folders/${cleanCurrentImageDriveId}`;
   const pendingCount = inspections.filter((i) => i.googleSheetsSyncStatus !== 'synced').length;
 
   return (
@@ -564,7 +595,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
                 เชื่อมต่อ Google Sheets & Google Drive (ไม่ต้องเข้า Google)
               </h3>
               <p className="text-[11px] text-slate-400">
-                ผูกค่าเริ่มต้นกับสเปรดชีตและโฟลเดอร์ Drive หลักของคุณ ซิงค์ครบ 8 หมวดและเก็บไฟล์ภาพอัตโนมัติ
+                ผูกสเปรดชีต, Drive หลัก และโฟลเดอร์ ImageBLS (สำหรับอัปโหลดรูปภาพทั้งหมดพร้อมสร้างโฟลเดอร์ย่อยอัตโนมัติ)
               </p>
             </div>
           </div>
@@ -584,21 +615,24 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
               <div className="min-w-0 flex-1">
                 <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-800 dark:text-emerald-300">
                   <CheckCircle2 className="h-4 w-4 shrink-0" />
-                  ผูกสเปรดชีตและโฟลเดอร์ Drive ปลายทางแล้ว
+                  ผูกสเปรดชีต, โฟลเดอร์ Drive และ ImageBLS แล้ว
                 </span>
                 <p className="mt-1 truncate font-mono text-[11px] text-emerald-700 dark:text-emerald-400">
                   Spreadsheet ID: {cleanCurrentSheetId}
                 </p>
                 <p className="mt-0.5 truncate font-mono text-[11px] text-sky-700 dark:text-sky-400">
-                  Drive Folder ID: {cleanCurrentDriveId}
+                  Drive หลัก (Master DB): {cleanCurrentDriveId}
+                </p>
+                <p className="mt-0.5 truncate font-mono text-[11px] text-indigo-700 dark:text-indigo-400">
+                  โฟลเดอร์รูปภาพ ImageBLS: {cleanCurrentImageDriveId}
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <div className="flex flex-wrap items-center gap-1.5 shrink-0">
                 <a
                   href={currentSheetUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-500"
+                  className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-500"
                 >
                   <ExternalLink className="h-3.5 w-3.5" /> เปิด Sheets
                 </a>
@@ -606,9 +640,17 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
                   href={currentDriveUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-sky-500"
+                  className="inline-flex items-center gap-1 rounded-lg bg-sky-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-sky-500"
                 >
-                  <FolderOpen className="h-3.5 w-3.5" /> เปิด Drive
+                  <FolderOpen className="h-3.5 w-3.5" /> Drive หลัก
+                </a>
+                <a
+                  href={currentImageDriveUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500"
+                >
+                  <FolderOpen className="h-3.5 w-3.5" /> ImageBLS
                 </a>
               </div>
             </div>
@@ -750,7 +792,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
             </div>
             <div>
               <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
-                Google Drive Folder ID (หรือวางลิงก์):
+                Drive Folder ID หลัก (สำรองฐานข้อมูล):
               </label>
               <input
                 type="text"
@@ -758,6 +800,18 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
                 onChange={(e) => setDriveFolderId(e.target.value)}
                 placeholder={DEFAULT_DRIVE_FOLDER_ID}
                 className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-800 shadow-sm focus:border-sky-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                โฟลเดอร์ ImageBLS Folder ID (เก็บรูปภาพที่อัปโหลดทั้งหมด + โฟลเดอร์ย่อย):
+              </label>
+              <input
+                type="text"
+                value={imageDriveFolderId}
+                onChange={(e) => setImageDriveFolderId(e.target.value)}
+                placeholder={DEFAULT_IMAGE_DRIVE_FOLDER_ID}
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-800 shadow-sm focus:border-indigo-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
               />
             </div>
             <div className="sm:col-span-2 flex justify-end">

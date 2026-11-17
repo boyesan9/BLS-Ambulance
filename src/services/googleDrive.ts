@@ -10,8 +10,9 @@ import {
   callAppsScriptBridge,
   getActiveAppsScriptUrl,
   getActiveDriveFolderId,
+  getActiveImageDriveFolderId,
 } from './googleBridge';
-import { DEFAULT_DRIVE_FOLDER_URL } from './storage';
+import { DEFAULT_IMAGE_DRIVE_FOLDER_URL } from './storage';
 
 // Convert base64 data URL to Blob
 export function dataUrlToBlob(dataUrl: string): { blob: Blob; mimeType: string } {
@@ -67,18 +68,18 @@ export function formatGoogleApiError(
   };
 }
 
-// Find or create inspection media folder inside the configured Google Drive parent folder
+// Find or create inspection media subfolder inside the ImageBLS Google Drive folder
 export async function getOrCreateInspectionFolder(
   accessToken: string,
   folderName = 'BLS_Ambulance_Inspections_Media',
-  parentFolderId = getActiveDriveFolderId()
+  parentFolderId = getActiveImageDriveFolderId()
 ): Promise<{ folderId: string; folderUrl: string }> {
   if (!accessToken) {
     return {
       folderId: parentFolderId,
       folderUrl: parentFolderId
         ? `https://drive.google.com/drive/folders/${parentFolderId}`
-        : DEFAULT_DRIVE_FOLDER_URL,
+        : DEFAULT_IMAGE_DRIVE_FOLDER_URL,
     };
   }
 
@@ -147,6 +148,7 @@ export async function uploadFileToDrive(
     const mimeMatch = dataUrl.match(/^data:([^;]+);base64,/);
     const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
     const base64Data = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+    const imageRootId = folderId || getActiveImageDriveFolderId();
     const res = await callAppsScriptBridge<{
       ok: boolean;
       fileId: string;
@@ -154,7 +156,8 @@ export async function uploadFileToDrive(
       folderId?: string;
       folderUrl?: string;
     }>('uploadFile', {
-      driveFolderId: folderId || getActiveDriveFolderId(),
+      driveFolderId: imageRootId,
+      imageDriveFolderId: imageRootId,
       folderName: appsScriptSubfolderName || '',
       fileName,
       mimeType,

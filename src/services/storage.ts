@@ -19,6 +19,8 @@ export const DEFAULT_SPREADSHEET_ID = '10EdMnTOWwjj29DWxo5m0YZ_8MtfnekkMQApTaqos
 export const DEFAULT_SPREADSHEET_URL = `https://docs.google.com/spreadsheets/d/${DEFAULT_SPREADSHEET_ID}/edit`;
 export const DEFAULT_DRIVE_FOLDER_ID = '1WjucI6gr3D-bgeZBXI6oqBgpJ01VHwS9';
 export const DEFAULT_DRIVE_FOLDER_URL = `https://drive.google.com/drive/folders/${DEFAULT_DRIVE_FOLDER_ID}`;
+export const DEFAULT_IMAGE_DRIVE_FOLDER_ID = '1SyOz2lK-1XxLoZRV9ZbloLUilgYizIc-';
+export const DEFAULT_IMAGE_DRIVE_FOLDER_URL = `https://drive.google.com/drive/folders/${DEFAULT_IMAGE_DRIVE_FOLDER_ID}`;
 export const DEFAULT_APPS_SCRIPT_URL = (import.meta.env.VITE_GOOGLE_APPS_SCRIPT_URL || '').trim();
 
 // Clean SVG ambulance illustration placeholder
@@ -356,6 +358,8 @@ export function getGoogleSheetsConfig(): GoogleSheetsConfig {
     spreadsheetUrl: DEFAULT_SPREADSHEET_URL,
     driveFolderId: DEFAULT_DRIVE_FOLDER_ID,
     driveFolderUrl: DEFAULT_DRIVE_FOLDER_URL,
+    imageDriveFolderId: DEFAULT_IMAGE_DRIVE_FOLDER_ID,
+    imageDriveFolderUrl: DEFAULT_IMAGE_DRIVE_FOLDER_URL,
     appsScriptUrl: DEFAULT_APPS_SCRIPT_URL || undefined,
     autoSync: true,
   };
@@ -367,6 +371,7 @@ export function getGoogleSheetsConfig(): GoogleSheetsConfig {
     const parsed: GoogleSheetsConfig = JSON.parse(data);
     const resolvedSheetId = parsed.spreadsheetId || DEFAULT_SPREADSHEET_ID;
     const resolvedFolderId = parsed.driveFolderId || DEFAULT_DRIVE_FOLDER_ID;
+    const resolvedImageFolderId = parsed.imageDriveFolderId || DEFAULT_IMAGE_DRIVE_FOLDER_ID;
     return {
       ...defaults,
       ...parsed,
@@ -376,6 +381,10 @@ export function getGoogleSheetsConfig(): GoogleSheetsConfig {
       driveFolderId: resolvedFolderId,
       driveFolderUrl:
         parsed.driveFolderUrl || `https://drive.google.com/drive/folders/${resolvedFolderId}`,
+      imageDriveFolderId: resolvedImageFolderId,
+      imageDriveFolderUrl:
+        parsed.imageDriveFolderUrl ||
+        `https://drive.google.com/drive/folders/${resolvedImageFolderId}`,
       appsScriptUrl: (parsed.appsScriptUrl || DEFAULT_APPS_SCRIPT_URL || '').trim() || undefined,
     };
   } catch (e) {
@@ -387,6 +396,7 @@ export function saveGoogleSheetsConfig(config: GoogleSheetsConfig) {
   try {
     const resolvedSheetId = config.spreadsheetId || DEFAULT_SPREADSHEET_ID;
     const resolvedFolderId = config.driveFolderId || DEFAULT_DRIVE_FOLDER_ID;
+    const resolvedImageFolderId = config.imageDriveFolderId || DEFAULT_IMAGE_DRIVE_FOLDER_ID;
     const normalized: GoogleSheetsConfig = {
       ...config,
       spreadsheetId: resolvedSheetId,
@@ -395,6 +405,10 @@ export function saveGoogleSheetsConfig(config: GoogleSheetsConfig) {
       driveFolderId: resolvedFolderId,
       driveFolderUrl:
         config.driveFolderUrl || `https://drive.google.com/drive/folders/${resolvedFolderId}`,
+      imageDriveFolderId: resolvedImageFolderId,
+      imageDriveFolderUrl:
+        config.imageDriveFolderUrl ||
+        `https://drive.google.com/drive/folders/${resolvedImageFolderId}`,
       appsScriptUrl: (config.appsScriptUrl || '').trim() || undefined,
     };
     localStorage.setItem(GSHEETS_CONFIG_KEY, JSON.stringify(normalized));

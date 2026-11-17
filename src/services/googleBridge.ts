@@ -1,6 +1,7 @@
 import firebaseConfig from '../../firebase-applet-config.json';
 import {
   DEFAULT_DRIVE_FOLDER_ID,
+  DEFAULT_IMAGE_DRIVE_FOLDER_ID,
   DEFAULT_SPREADSHEET_ID,
   getGoogleSheetsConfig,
 } from './storage';
@@ -19,6 +20,11 @@ export function getActiveAppsScriptUrl(): string {
 export function getActiveDriveFolderId(): string {
   const cfg = getGoogleSheetsConfig();
   return (cfg.driveFolderId || DEFAULT_DRIVE_FOLDER_ID).trim();
+}
+
+export function getActiveImageDriveFolderId(): string {
+  const cfg = getGoogleSheetsConfig();
+  return (cfg.imageDriveFolderId || DEFAULT_IMAGE_DRIVE_FOLDER_ID).trim();
 }
 
 export function getActiveSpreadsheetId(): string {
@@ -48,6 +54,7 @@ export async function callAppsScriptBridge<T = any>(
     action,
     spreadsheetId: payload.spreadsheetId || getActiveSpreadsheetId(),
     driveFolderId: payload.driveFolderId || getActiveDriveFolderId(),
+    imageDriveFolderId: payload.imageDriveFolderId || getActiveImageDriveFolderId(),
     ...payload,
   };
 
@@ -157,12 +164,12 @@ export function extractGoogleResourceId(input: string): string {
   if (sheetMatch) return sheetMatch[1];
   const folderMatch = trimmed.match(/\/folders\/([a-zA-Z0-9_-]+)/);
   if (folderMatch) return folderMatch[1];
-  return trimmed;
+  return trimmed.replace(/\s+/g, '');
 }
 
 /**
- * Ready-to-deploy Google Apps Script (Code.gs) pre-bound to the user's Spreadsheet and Drive Folder.
- * Deploy as Web App (Execute as: Me, Who has access: Anyone) for 100% login-free read/write & Drive uploads.
+ * Ready-to-deploy Google Apps Script (Code.gs) pre-bound to the user's Spreadsheet and Drive Folders.
+ * Deploy as Web App (Execute as: Me, Who has access: Anyone) for 100% login-free read/write & ImageBLS Drive uploads.
  */
 export const GENERATED_APPS_SCRIPT_CODE = `// วางโค้ดนี้ใน Google Apps Script (ส่วนขยาย > Apps Script ใน Google Sheet)
 // จากนั้นกด ทำให้ใช้งานได้ (Deploy) > รายการใหม่ > เว็บแอป
@@ -171,6 +178,7 @@ export const GENERATED_APPS_SCRIPT_CODE = `// วางโค้ดนี้ใ�
 
 const DEFAULT_SPREADSHEET_ID = '${DEFAULT_SPREADSHEET_ID}';
 const DEFAULT_DRIVE_FOLDER_ID = '${DEFAULT_DRIVE_FOLDER_ID}';
+const DEFAULT_IMAGE_DRIVE_FOLDER_ID = '${DEFAULT_IMAGE_DRIVE_FOLDER_ID}';
 const MASTER_DB_FILENAME = 'BLS_SYSTEM_MASTER_DATABASE.json';
 
 function jsonResponse(obj) {
@@ -179,7 +187,7 @@ function jsonResponse(obj) {
 }
 
 function getOrCreateSubfolder(parentFolderId, folderName) {
-  var root = DriveApp.getFolderById(parentFolderId || DEFAULT_DRIVE_FOLDER_ID);
+  var root = DriveApp.getFolderById(parentFolderId || DEFAULT_IMAGE_DRIVE_FOLDER_ID);
   if (!folderName) return root;
   var folders = root.getFoldersByName(folderName);
   if (folders.hasNext()) {
@@ -206,10 +214,12 @@ function doGet(e) {
     if (action === 'ping') {
       var ss = SpreadsheetApp.openById(DEFAULT_SPREADSHEET_ID);
       var folder = DriveApp.getFolderById(DEFAULT_DRIVE_FOLDER_ID);
+      var imgFolder = DriveApp.getFolderById(DEFAULT_IMAGE_DRIVE_FOLDER_ID);
       return jsonResponse({
         ok: true,
         spreadsheetName: ss.getName(),
         folderName: folder.getName(),
+        imageFolderName: imgFolder.getName(),
       });
     }
     return jsonResponse({ ok: true });
@@ -224,14 +234,17 @@ function doPost(e) {
     var action = body.action || '';
     var ssId = body.spreadsheetId || DEFAULT_SPREADSHEET_ID;
     var folderId = body.driveFolderId || DEFAULT_DRIVE_FOLDER_ID;
+    var imageFolderId = body.imageDriveFolderId || DEFAULT_IMAGE_DRIVE_FOLDER_ID;
     var ss = SpreadsheetApp.openById(ssId);
 
     if (action === 'ping') {
       var folder = DriveApp.getFolderById(folderId);
+      var imgFolder = DriveApp.getFolderById(imageFolderId);
       return jsonResponse({
         ok: true,
         spreadsheetName: ss.getName(),
         folderName: folder.getName(),
+        imageFolderName: imgFolder.getName(),
       });
     }
 
@@ -301,7 +314,7 @@ function doPost(e) {
     }
 
     if (action === 'uploadFile') {
-      var targetFolder = getOrCreateSubfolder(folderId, body.folderName || '');
+      var targetFolder = getOrCreateSubfolder(imageFolderId, body.folderName || '');
       var bytes = Utilities.base64Decode(body.base64Data || '');
       var blob = Utilities.newBlob(bytes, body.mimeType || 'image/jpeg', body.fileName || ('file_' + Date.now() + '.jpg'));
       var file = targetFolder.createFile(blob);

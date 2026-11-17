@@ -99,6 +99,8 @@ export interface GoogleSheetsConfig {
   spreadsheetUrl?: string;
   driveFolderId?: string;
   driveFolderUrl?: string;
+  imageDriveFolderId?: string;
+  imageDriveFolderUrl?: string;
   appsScriptUrl?: string;
   sheetName?: string;
   lastSyncedAt?: string;
