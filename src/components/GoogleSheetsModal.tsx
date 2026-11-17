@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   AmbulanceVehicle,
   GoogleSheetsConfig,
@@ -19,7 +19,6 @@ import {
   AlertCircle,
   LogIn,
   DownloadCloud,
-  Layers,
   Activity,
   Truck,
   Users,
@@ -29,6 +28,11 @@ import {
   PackagePlus,
   Copy,
   Check,
+  FolderOpen,
+  Code2,
+  Zap,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import {
   createInspectionSpreadsheet,
@@ -54,11 +58,20 @@ import {
 import { uploadInspectionMediaToDrive, saveMasterDatabaseToDrive } from '../services/googleDrive';
 import { googleSignIn, getAccessToken } from '../services/firebaseAuth';
 import {
+  DEFAULT_DRIVE_FOLDER_ID,
+  DEFAULT_SPREADSHEET_ID,
   getStoredDamageRecords,
   getStoredFuelLogs,
   getStoredEquipmentInspections,
   getStoredEquipmentRequisitions,
 } from '../services/storage';
+import {
+  callAppsScriptBridge,
+  extractGoogleResourceId,
+  GENERATED_APPS_SCRIPT_CODE,
+  getActiveAppsScriptUrl,
+  hasNoLoginBridge,
+} from '../services/googleBridge';
 import { User } from 'firebase/auth';
 
 interface GoogleSheetsModalProps {
@@ -107,15 +120,34 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
   equipmentRequisitions,
   onSyncBackData,
 }) => {
-  const [spreadsheetId, setSpreadsheetId] = useState(config.spreadsheetId || '');
+  const [spreadsheetId, setSpreadsheetId] = useState(config.spreadsheetId || DEFAULT_SPREADSHEET_ID);
+  const [driveFolderId, setDriveFolderId] = useState(config.driveFolderId || DEFAULT_DRIVE_FOLDER_ID);
+  const [appsScriptUrl, setAppsScriptUrl] = useState(config.appsScriptUrl || getActiveAppsScriptUrl());
   const [isCreating, setIsCreating] = useState(false);
   const [isSyncingAll, setIsSyncingAll] = useState(false);
   const [isPullingData, setIsPullingData] = useState(false);
+  const [isTestingBridge, setIsTestingBridge] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [showScriptCode, setShowScriptCode] = useState(false);
+  const [copiedScript, setCopiedScript] = useState(false);
   const [copiedDomain, setCopiedDomain] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setSpreadsheetId(config.spreadsheetId || DEFAULT_SPREADSHEET_ID);
+      setDriveFolderId(config.driveFolderId || DEFAULT_DRIVE_FOLDER_ID);
+      setAppsScriptUrl(config.appsScriptUrl || getActiveAppsScriptUrl());
+      setStatusMessage(null);
+    }
+  }, [isOpen, config.spreadsheetId, config.driveFolderId, config.appsScriptUrl]);
 
   if (!isOpen || currentUser.role !== 'admin') return null;
+
+  const cleanCurrentSheetId = extractGoogleResourceId(spreadsheetId) || DEFAULT_SPREADSHEET_ID;
+  const cleanCurrentDriveId = extractGoogleResourceId(driveFolderId) || DEFAULT_DRIVE_FOLDER_ID;
+  const activeBridgeUrl = appsScriptUrl.trim();
+  const isBridgeReady = Boolean(activeBridgeUrl || hasNoLoginBridge());
 
   const handleGoogleSignIn = async (forcePopup = false) => {
     setIsLoggingIn(true);
@@ -146,6 +178,83 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
     }
   };
 
+  const handleSaveBridgeUrl = () => {
+    const cleanUrl = appsScriptUrl.trim();
+    onSaveConfig({
+      ...config,
+      spreadsheetId: cleanCurrentSheetId,
+      spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanCurrentSheetId}/edit`,
+      driveFolderId: cleanCurrentDriveId,
+      driveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentDriveId}`,
+      appsScriptUrl: cleanUrl,
+    });
+    setStatusMessage({
+      type: 'success',
+      text: cleanUrl
+        ? 'บันทึก Apps Script Web App URL เรียบร้อยแล้ว ระบบพร้อมซิงค์ 2 ทางโดยไม่ต้องเข้า Google!'
+        : 'ล้างค่า Apps Script URL แล้ว (ระบบยังอ่านชีตสาธารณะและเชื่อมต่อ ID ปลายทางตามปกติ)',
+    });
+  };
+
+  const handleTestBridge = async () => {
+    const cleanUrl = appsScriptUrl.trim();
+    if (!cleanUrl) {
+      setStatusMessage({
+        type: 'error',
+        text: 'กรุณาวางลิงก์ Apps Script Web App (/exec) ก่อนทดสอบเชื่อมต่อ',
+      });
+      return;
+    }
+
+    setIsTestingBridge(true);
+    setStatusMessage(null);
+    try {
+      onSaveConfig({
+        ...config,
+        spreadsheetId: cleanCurrentSheetId,
+        spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanCurrentSheetId}/edit`,
+        driveFolderId: cleanCurrentDriveId,
+        driveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentDriveId}`,
+        appsScriptUrl: cleanUrl,
+      });
+
+      const res = await callAppsScriptBridge<{
+        ok: boolean;
+        spreadsheetName?: string;
+        folderName?: string;
+      }>(
+        'ping',
+        {
+          spreadsheetId: cleanCurrentSheetId,
+          driveFolderId: cleanCurrentDriveId,
+        },
+        cleanUrl
+      );
+
+      setStatusMessage({
+        type: 'success',
+        text: `เชื่อมต่อสำเร็จโดยไม่ต้องล็อกอิน Google! ชีต: "${res.spreadsheetName || cleanCurrentSheetId}" · โฟลเดอร์ Drive: "${res.folderName || cleanCurrentDriveId}"`,
+      });
+    } catch (err: any) {
+      setStatusMessage({
+        type: 'error',
+        text: `ทดสอบไม่ผ่าน: ${err.message || 'กรุณาตรวจสอบว่า Deploy Web App ตั้งค่า "Who has access: ทุกคน (Anyone)" และคัดลอก URL ที่ลงท้าย /exec'}`,
+      });
+    } finally {
+      setIsTestingBridge(false);
+    }
+  };
+
+  const handleCopyAppsScript = async () => {
+    try {
+      await navigator.clipboard?.writeText(GENERATED_APPS_SCRIPT_CODE);
+      setCopiedScript(true);
+      setTimeout(() => setCopiedScript(false), 3000);
+    } catch {
+      setShowScriptCode(true);
+    }
+  };
+
   const handleCreateNewSheet = async () => {
     setIsCreating(true);
     setStatusMessage(null);
@@ -161,7 +270,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
       }
 
       if (!token) {
-        throw new Error('กรุณาลงชื่อเข้าใช้ Google เพื่อสร้างสเปรดชีต');
+        throw new Error('การสร้างไฟล์ Spreadsheet ใหม่จำเป็นต้องลงชื่อเข้าใช้ Google (หรือใช้ ID ชีตที่มีอยู่แล้วได้ทันทีโดยไม่ต้องล็อกอิน)');
       }
 
       const res = await createInspectionSpreadsheet(
@@ -173,6 +282,9 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
         ...config,
         spreadsheetId: res.spreadsheetId,
         spreadsheetUrl: res.spreadsheetUrl,
+        driveFolderId: cleanCurrentDriveId,
+        driveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentDriveId}`,
+        appsScriptUrl: activeBridgeUrl || config.appsScriptUrl,
         sheetName: INSPECTION_SHEET_TITLE,
         lastSyncedAt: new Date().toLocaleTimeString('th-TH'),
       };
@@ -180,7 +292,6 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
       setSpreadsheetId(res.spreadsheetId);
       onSaveConfig(newConfig);
 
-      // Immediately sync current Inspections, Fleet, Staff, Damage Records, and Fuel Logs across all 6 tabs
       await syncInspectionsToSheet(res.spreadsheetId, inspections, token);
       await syncVehiclesToSheet(res.spreadsheetId, vehicles, token);
       await syncStaffToSheet(res.spreadsheetId, staffList, token);
@@ -227,10 +338,10 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
   };
 
   const handleSyncAllPending = async () => {
-    if (!spreadsheetId) {
+    if (!cleanCurrentSheetId) {
       setStatusMessage({
         type: 'error',
-        text: 'กรุณาระบุหรือสร้าง Google Spreadsheet ID ก่อน',
+        text: 'กรุณาระบุ Google Spreadsheet ID ก่อน',
       });
       return;
     }
@@ -238,30 +349,35 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
     setIsSyncingAll(true);
     setStatusMessage(null);
     try {
-      let token = await getAccessToken();
-      if (!token) {
-        const res = await googleSignIn({ intent: { type: 'sheets_modal' } });
-        if (res?.redirected) return;
-        if (res?.accessToken && res.user) {
-          token = res.accessToken;
-          onGoogleLoginSuccess(res.user);
-        }
+      const token = await getAccessToken();
+      const activeToken = token || '';
+      const bridgeReady = Boolean(activeBridgeUrl || hasNoLoginBridge());
+
+      if (!activeToken && !bridgeReady) {
+        throw new Error(
+          'หากต้องการเขียนข้อมูลขึ้นชีตและ Drive โดยไม่ต้องเข้า Google กรุณาคัดลอกโค้ด Apps Script ไปวางและบันทึก Web App URL ด้านบน (หรือกดลงชื่อเข้าใช้ Google ด้านล่าง)'
+        );
       }
 
-      if (!token) {
-        throw new Error('กรุณาลงชื่อเข้าใช้ Google เพื่อซิงค์ข้อมูล');
-      }
+      // Ensure latest config is saved before bridge calls
+      onSaveConfig({
+        ...config,
+        spreadsheetId: cleanCurrentSheetId,
+        spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanCurrentSheetId}/edit`,
+        driveFolderId: cleanCurrentDriveId,
+        driveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentDriveId}`,
+        appsScriptUrl: activeBridgeUrl || config.appsScriptUrl,
+      });
 
-      await ensureAllSpreadsheetTabs(spreadsheetId, token);
+      await ensureAllSpreadsheetTabs(cleanCurrentSheetId, activeToken);
 
       const syncedInspectionsList: InspectionRecord[] = [];
       for (const rec of inspections) {
-        let updatedRec = { ...rec };
+        const updatedRec = { ...rec };
 
-        // Upload media to Google Drive if not uploaded yet
         if (!updatedRec.driveLinks?.folderUrl) {
           try {
-            const driveLinks = await uploadInspectionMediaToDrive(token, updatedRec);
+            const driveLinks = await uploadInspectionMediaToDrive(activeToken, updatedRec);
             updatedRec.driveLinks = driveLinks;
           } catch (dErr) {
             console.warn('Google Drive upload error for record:', updatedRec.id, dErr);
@@ -273,25 +389,23 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
         syncedInspectionsList.push(updatedRec);
       }
 
-      // Sync exact 1:1 tables across all tabs (Inspections, Fleet, Staff, Damage, Fuel)
-      await syncInspectionsToSheet(spreadsheetId, syncedInspectionsList, token);
-      await syncVehiclesToSheet(spreadsheetId, vehicles, token);
-      await syncStaffToSheet(spreadsheetId, staffList, token);
+      await syncInspectionsToSheet(cleanCurrentSheetId, syncedInspectionsList, activeToken);
+      await syncVehiclesToSheet(cleanCurrentSheetId, vehicles, activeToken);
+      await syncStaffToSheet(cleanCurrentSheetId, staffList, activeToken);
 
       const currentDamage = damageRecords || getStoredDamageRecords();
-      await syncDamageToSheet(spreadsheetId, currentDamage, token);
+      await syncDamageToSheet(cleanCurrentSheetId, currentDamage, activeToken);
 
       const currentFuel = fuelLogs || getStoredFuelLogs();
-      await syncFuelLogsToSheet(spreadsheetId, currentFuel, token);
+      await syncFuelLogsToSheet(cleanCurrentSheetId, currentFuel, activeToken);
 
       const currentEquipment = equipmentInspections || getStoredEquipmentInspections();
-      await syncEquipmentInspectionsToSheet(spreadsheetId, currentEquipment, token);
+      await syncEquipmentInspectionsToSheet(cleanCurrentSheetId, currentEquipment, activeToken);
 
       const currentRequisitions = equipmentRequisitions || getStoredEquipmentRequisitions();
-      await syncRequisitionsToSheet(spreadsheetId, currentRequisitions, token);
+      await syncRequisitionsToSheet(cleanCurrentSheetId, currentRequisitions, activeToken);
 
-      // Update Google Drive Master DB Snapshot to match Google Sheets 100%
-      await saveMasterDatabaseToDrive(token, {
+      await saveMasterDatabaseToDrive(activeToken, {
         inspections: syncedInspectionsList,
         vehicles,
         staffList,
@@ -299,36 +413,40 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
         fuelLogs: currentFuel,
         equipmentInspections: currentEquipment,
         equipmentRequisitions: currentRequisitions,
-        spreadsheetId,
-        spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
+        spreadsheetId: cleanCurrentSheetId,
+        spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanCurrentSheetId}/edit`,
         lastSyncedAt: new Date().toLocaleString('th-TH'),
         version: 1,
       }).catch((err) => console.warn('Drive master snapshot warning:', err));
 
       const count = syncedInspectionsList.length;
       await appendAuditLogToSheet(
-        spreadsheetId,
+        cleanCurrentSheetId,
         {
           id: `log-${Date.now()}`,
           timestamp: new Date().toLocaleString('th-TH'),
           action: 'ซิงค์ข้อมูลทั้งหมด',
           module: 'ระบบภาพรวม',
-          targetItem: `สเปรดชีต ${spreadsheetId.slice(0, 10)}...`,
+          targetItem: `สเปรดชีต ${cleanCurrentSheetId.slice(0, 10)}...`,
           operator: `${currentUser.name} (${currentUser.role === 'admin' ? 'Admin' : 'Staff'})`,
           details: `ซิงค์ตรวจสภาพ ${count} รายการ, กองรถ ${vehicles.length} คัน, เจ้าหน้าที่ ${staffList.length} คน, รอยรอบคัน ${currentDamage.length} จุด, เติมน้ำมัน ${currentFuel.length} ครั้ง, อุปกรณ์ BLS ${currentEquipment.length} รายการ, เบิกอุปกรณ์ ${currentRequisitions.length} ใบเบิก`,
         },
-        token
+        activeToken
       );
 
       onSaveConfig({
         ...config,
-        spreadsheetId,
+        spreadsheetId: cleanCurrentSheetId,
+        spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanCurrentSheetId}/edit`,
+        driveFolderId: cleanCurrentDriveId,
+        driveFolderUrl: `https://drive.google.com/drive/folders/${cleanCurrentDriveId}`,
+        appsScriptUrl: activeBridgeUrl || config.appsScriptUrl,
         lastSyncedAt: new Date().toLocaleTimeString('th-TH'),
       });
 
       setStatusMessage({
         type: 'success',
-        text: `ซิงค์ข้อมูลลง Google Sheets & Drive ครบถ้วนทั้ง 8 หมวด (ตรวจสภาพ ${count}, กองรถ ${vehicles.length}, เจ้าหน้าที่ ${staffList.length}, รอยรอบคัน ${currentDamage.length}, น้ำมัน ${currentFuel.length}, อุปกรณ์ BLS ${currentEquipment.length}, เบิกอุปกรณ์ ${currentRequisitions.length})!`,
+        text: `ซิงค์ข้อมูลลง Google Sheets & โฟลเดอร์ Drive ครบถ้วนทั้ง 8 หมวด (ตรวจสภาพ ${count}, กองรถ ${vehicles.length}, เจ้าหน้าที่ ${staffList.length}, รอยรอบคัน ${currentDamage.length}, น้ำมัน ${currentFuel.length}, อุปกรณ์ BLS ${currentEquipment.length}, เบิกอุปกรณ์ ${currentRequisitions.length})!`,
       });
     } catch (err: any) {
       setStatusMessage({
@@ -341,10 +459,10 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
   };
 
   const handlePullDataFromSheets = async () => {
-    if (!spreadsheetId) {
+    if (!cleanCurrentSheetId) {
       setStatusMessage({
         type: 'error',
-        text: 'กรุณาระบุหรือสร้าง Google Spreadsheet ID ก่อนดึงข้อมูลคืน',
+        text: 'กรุณาระบุ Google Spreadsheet ID ก่อนดึงข้อมูลคืน',
       });
       return;
     }
@@ -352,44 +470,52 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
     setIsPullingData(true);
     setStatusMessage(null);
     try {
-      let token = await getAccessToken();
-      if (!token) {
-        const res = await googleSignIn({ intent: { type: 'sheets_modal' } });
-        if (res?.redirected) return;
-        if (res?.accessToken && res.user) {
-          token = res.accessToken;
-          onGoogleLoginSuccess(res.user);
-        }
+      const token = await getAccessToken();
+      const activeToken = token || '';
+      const bridgeReady = Boolean(activeBridgeUrl || hasNoLoginBridge());
+
+      const pulled = await pullAllDataFromGoogleSheets(cleanCurrentSheetId, activeToken);
+      const totalPulled =
+        pulled.vehicles.length +
+        pulled.staffList.length +
+        pulled.inspections.length +
+        pulled.damageRecords.length +
+        pulled.fuelLogs.length +
+        pulled.equipmentInspections.length +
+        pulled.equipmentRequisitions.length;
+
+      if (totalPulled === 0 && !activeToken && !bridgeReady) {
+        throw new Error(
+          'ยังอ่านข้อมูลจากชีตไม่สำเร็จโดยไม่ต้องล็อกอิน: กรุณาแชร์ Google Sheet นี้เป็น "ทุกคนที่มีลิงก์ดูได้" (Anyone with the link) หรือวาง Apps Script Web App URL ด้านบน'
+        );
       }
 
-      if (!token) {
-        throw new Error('กรุณาลงชื่อเข้าใช้ Google เพื่อดึงข้อมูล');
-      }
-
-      const pulled = await pullAllDataFromGoogleSheets(spreadsheetId, token);
-
-      if (onSyncBackData) {
+      if (totalPulled > 0 && onSyncBackData) {
         onSyncBackData(pulled);
       }
 
-      // Append audit log for restore
-      await appendAuditLogToSheet(
-        spreadsheetId,
-        {
-          id: `log-${Date.now()}`,
-          timestamp: new Date().toLocaleString('th-TH'),
-          action: 'ดึงข้อมูลคืน (Sync Back)',
-          module: 'ระบบภาพรวม',
-          targetItem: 'ฐานข้อมูลระบบส่วนกลาง',
-          operator: `${currentUser.name} (${currentUser.role === 'admin' ? 'Admin' : 'Staff'})`,
-          details: `ดึงข้อมูลคืนจากชีต: รถ ${pulled.vehicles.length} คัน, เจ้าหน้าที่ ${pulled.staffList.length} คน`,
-        },
-        token
-      );
+      if (activeToken || bridgeReady) {
+        await appendAuditLogToSheet(
+          cleanCurrentSheetId,
+          {
+            id: `log-${Date.now()}`,
+            timestamp: new Date().toLocaleString('th-TH'),
+            action: 'ดึงข้อมูลคืน (Sync Back)',
+            module: 'ระบบภาพรวม',
+            targetItem: 'ฐานข้อมูลระบบส่วนกลาง',
+            operator: `${currentUser.name} (${currentUser.role === 'admin' ? 'Admin' : 'Staff'})`,
+            details: `ดึงข้อมูลคืนจากชีต: ตรวจสภาพ ${pulled.inspections.length}, รถ ${pulled.vehicles.length} คัน, เจ้าหน้าที่ ${pulled.staffList.length} คน`,
+          },
+          activeToken
+        );
+      }
 
       setStatusMessage({
         type: 'success',
-        text: `ดึงข้อมูลคืนสำเร็จ! อัปเดตรถ ${pulled.vehicles.length} คัน และเจ้าหน้าที่ ${pulled.staffList.length} คนในระบบเรียบร้อย`,
+        text:
+          totalPulled > 0
+            ? `ดึงข้อมูลคืนสำเร็จโดยไม่ต้องเข้า Google! อัปเดตผลตรวจ ${pulled.inspections.length} รายการ, รถ ${pulled.vehicles.length} คัน, เจ้าหน้าที่ ${pulled.staffList.length} คน`
+            : 'เชื่อมต่อชีตสำเร็จ (ชีตนี้ยังไม่มีแถวข้อมูล — สามารถกด "ซิงค์ข้อมูลขึ้นชีต" เพื่อส่งข้อมูลจากเครื่องขึ้นไปได้ทันที)',
       });
     } catch (err: any) {
       setStatusMessage({
@@ -401,45 +527,44 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
     }
   };
 
-  const handleSaveCustomId = () => {
-    if (!spreadsheetId) return;
-    const cleanId = spreadsheetId.includes('/d/')
-      ? spreadsheetId.split('/d/')[1].split('/')[0]
-      : spreadsheetId.trim();
+  const handleSaveCustomIds = () => {
+    const cleanSheet = extractGoogleResourceId(spreadsheetId) || DEFAULT_SPREADSHEET_ID;
+    const cleanDrive = extractGoogleResourceId(driveFolderId) || DEFAULT_DRIVE_FOLDER_ID;
+    setSpreadsheetId(cleanSheet);
+    setDriveFolderId(cleanDrive);
 
     onSaveConfig({
       ...config,
-      spreadsheetId: cleanId,
-      spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanId}/edit`,
+      spreadsheetId: cleanSheet,
+      spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${cleanSheet}/edit`,
+      driveFolderId: cleanDrive,
+      driveFolderUrl: `https://drive.google.com/drive/folders/${cleanDrive}`,
+      appsScriptUrl: activeBridgeUrl || config.appsScriptUrl,
     });
 
     setStatusMessage({
       type: 'success',
-      text: 'บันทึก Spreadsheet ID เรียบร้อยแล้ว',
+      text: 'บันทึก Google Spreadsheet ID และ Google Drive Folder ID เรียบร้อยแล้ว',
     });
   };
 
-  const currentSheetUrl =
-    config.spreadsheetUrl ||
-    (config.spreadsheetId
-      ? `https://docs.google.com/spreadsheets/d/${config.spreadsheetId}/edit`
-      : null);
-
+  const currentSheetUrl = `https://docs.google.com/spreadsheets/d/${cleanCurrentSheetId}/edit`;
+  const currentDriveUrl = `https://drive.google.com/drive/folders/${cleanCurrentDriveId}`;
   const pendingCount = inspections.filter((i) => i.googleSheetsSyncStatus !== 'synced').length;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
-      <div className="relative w-full max-w-xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900 max-h-[90vh] flex flex-col">
+      <div className="relative w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900 max-h-[92vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4 dark:border-slate-800 shrink-0">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2.5">
             <FileSpreadsheet className="h-5 w-5 text-emerald-600" />
             <div>
               <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                การเชื่อมต่อ Google Sheets & Auto-Sync
+                เชื่อมต่อ Google Sheets & Google Drive (ไม่ต้องเข้า Google)
               </h3>
               <p className="text-[11px] text-slate-400">
-                ซิงค์อัตโนมัติ 8 หมวด (ผลตรวจ, อุปกรณ์ BLS, เบิกอุปกรณ์, กองรถ, เจ้าหน้าที่, รอยตัวรถ, น้ำมัน, Audit Log) และดึงข้อมูลคืน
+                ผูกค่าเริ่มต้นกับสเปรดชีตและโฟลเดอร์ Drive หลักของคุณ ซิงค์ครบ 8 หมวดและเก็บไฟล์ภาพอัตโนมัติ
               </p>
             </div>
           </div>
@@ -453,148 +578,195 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
 
         {/* Scrollable Body */}
         <div className="p-6 space-y-4 overflow-y-auto">
-          {/* Google Account Status */}
-          <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3.5 dark:border-slate-800 dark:bg-slate-850">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs font-semibold text-slate-900 dark:text-white">
-                  บัญชี Google ที่เชื่อมต่อ:
+          {/* Active Spreadsheet & Drive Folder Card */}
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 dark:border-emerald-900/40 dark:bg-emerald-950/20 space-y-3">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-800 dark:text-emerald-300">
+                  <CheckCircle2 className="h-4 w-4 shrink-0" />
+                  ผูกสเปรดชีตและโฟลเดอร์ Drive ปลายทางแล้ว
+                </span>
+                <p className="mt-1 truncate font-mono text-[11px] text-emerald-700 dark:text-emerald-400">
+                  Spreadsheet ID: {cleanCurrentSheetId}
                 </p>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                  {googleUser ? googleUser.email : 'ยังไม่ได้เชื่อมต่อบัญชี Google'}
+                <p className="mt-0.5 truncate font-mono text-[11px] text-sky-700 dark:text-sky-400">
+                  Drive Folder ID: {cleanCurrentDriveId}
                 </p>
               </div>
-
-              {!googleUser ? (
-                <div className="flex flex-col items-end gap-1">
-                  <button
-                    type="button"
-                    onClick={() => handleGoogleSignIn(false)}
-                    disabled={isLoggingIn}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-                  >
-                    <LogIn className="h-3.5 w-3.5 text-sky-600" />
-                    {isLoggingIn ? 'กำลังเชื่อมต่อ...' : 'ลงชื่อเข้าใช้ Google'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleGoogleSignIn(true)}
-                    disabled={isLoggingIn}
-                    className="text-[10px] font-medium text-sky-600 hover:underline dark:text-sky-400"
-                  >
-                    หรือเชื่อมต่อผ่านหน้าต่าง Popup
-                  </button>
-                </div>
-              ) : (
-                <span className="flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
-                  <CheckCircle2 className="h-4 w-4" /> เชื่อมต่อแล้ว
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Current Sheet Connection */}
-          {currentSheetUrl ? (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4 dark:border-emerald-900/40 dark:bg-emerald-950/20">
-              <div className="flex items-center justify-between mb-2">
-                <div>
-                  <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-800 dark:text-emerald-300">
-                    <CheckCircle2 className="h-4 w-4" /> เชื่อมต่อกับ Spreadsheet แล้ว
-                  </span>
-                  <p className="mt-0.5 line-clamp-1 font-mono text-[11px] text-emerald-700 dark:text-emerald-400">
-                    ID: {config.spreadsheetId}
-                  </p>
-                </div>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
                 <a
                   href={currentSheetUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-500"
                 >
-                  <ExternalLink className="h-3.5 w-3.5" /> เปิดดูใน Sheets
+                  <ExternalLink className="h-3.5 w-3.5" /> เปิด Sheets
+                </a>
+                <a
+                  href={currentDriveUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-sky-500"
+                >
+                  <FolderOpen className="h-3.5 w-3.5" /> เปิด Drive
                 </a>
               </div>
+            </div>
 
-              {/* 8 Tabs Indicator Grid */}
-              <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px]">
-                <div className="flex items-center gap-1.5 rounded-lg bg-white/70 p-2 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
-                  <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
-                  <span className="truncate">{INSPECTION_SHEET_TITLE}</span>
-                </div>
-                <div className="flex items-center gap-1.5 rounded-lg bg-white/70 p-2 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
-                  <PackageCheck className="h-3.5 w-3.5 text-teal-600 shrink-0" />
-                  <span className="truncate">{EQUIPMENT_SHEET_TITLE}</span>
-                </div>
-                <div className="flex items-center gap-1.5 rounded-lg bg-white/70 p-2 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
-                  <PackagePlus className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
-                  <span className="truncate">{REQUISITION_SHEET_TITLE}</span>
-                </div>
-                <div className="flex items-center gap-1.5 rounded-lg bg-white/70 p-2 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
-                  <Truck className="h-3.5 w-3.5 text-sky-600 shrink-0" />
-                  <span className="truncate">{VEHICLES_SHEET_TITLE}</span>
-                </div>
-                <div className="flex items-center gap-1.5 rounded-lg bg-white/70 p-2 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
-                  <Users className="h-3.5 w-3.5 text-amber-600 shrink-0" />
-                  <span className="truncate">{STAFF_SHEET_TITLE}</span>
-                </div>
-                <div className="flex items-center gap-1.5 rounded-lg bg-white/70 p-2 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
-                  <Car className="h-3.5 w-3.5 text-blue-600 shrink-0" />
-                  <span className="truncate">{DAMAGE_SHEET_TITLE}</span>
-                </div>
-                <div className="flex items-center gap-1.5 rounded-lg bg-white/70 p-2 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
-                  <Fuel className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
-                  <span className="truncate">{FUEL_SHEET_TITLE}</span>
-                </div>
-                <div className="flex items-center gap-1.5 rounded-lg bg-white/70 p-2 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
-                  <Activity className="h-3.5 w-3.5 text-purple-600 shrink-0" />
-                  <span className="truncate">{AUDIT_LOG_SHEET_TITLE}</span>
-                </div>
+            {/* 8 Tabs Indicator Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[11px]">
+              <div className="flex items-center gap-1.5 rounded-lg bg-white/80 p-1.5 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
+                <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                <span className="truncate">{INSPECTION_SHEET_TITLE}</span>
+              </div>
+              <div className="flex items-center gap-1.5 rounded-lg bg-white/80 p-1.5 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
+                <PackageCheck className="h-3.5 w-3.5 text-teal-600 shrink-0" />
+                <span className="truncate">{EQUIPMENT_SHEET_TITLE}</span>
+              </div>
+              <div className="flex items-center gap-1.5 rounded-lg bg-white/80 p-1.5 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
+                <PackagePlus className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
+                <span className="truncate">{REQUISITION_SHEET_TITLE}</span>
+              </div>
+              <div className="flex items-center gap-1.5 rounded-lg bg-white/80 p-1.5 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
+                <Truck className="h-3.5 w-3.5 text-sky-600 shrink-0" />
+                <span className="truncate">{VEHICLES_SHEET_TITLE}</span>
+              </div>
+              <div className="flex items-center gap-1.5 rounded-lg bg-white/80 p-1.5 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
+                <Users className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                <span className="truncate">{STAFF_SHEET_TITLE}</span>
+              </div>
+              <div className="flex items-center gap-1.5 rounded-lg bg-white/80 p-1.5 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
+                <Car className="h-3.5 w-3.5 text-blue-600 shrink-0" />
+                <span className="truncate">{DAMAGE_SHEET_TITLE}</span>
+              </div>
+              <div className="flex items-center gap-1.5 rounded-lg bg-white/80 p-1.5 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
+                <Fuel className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                <span className="truncate">{FUEL_SHEET_TITLE}</span>
+              </div>
+              <div className="flex items-center gap-1.5 rounded-lg bg-white/80 p-1.5 dark:bg-slate-900/60 text-slate-700 dark:text-slate-300">
+                <Activity className="h-3.5 w-3.5 text-purple-600 shrink-0" />
+                <span className="truncate">{AUDIT_LOG_SHEET_TITLE}</span>
               </div>
             </div>
-          ) : (
-            <div className="rounded-xl border border-dashed border-slate-300 p-4 text-center dark:border-slate-700">
-              <FileSpreadsheet className="mx-auto mb-2 h-8 w-8 text-slate-400" />
-              <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                ยังไม่มีการเชื่อมต่อกับ Google Spreadsheet
-              </p>
-              <p className="mt-0.5 text-[11px] text-slate-400">
-                สร้างสเปรดชีตใหม่ 8 หมวด (ตรวจสภาพ, อุปกรณ์ BLS, เบิกอุปกรณ์, กองรถ, เจ้าหน้าที่, รอยตัวรถ, น้ำมัน, Audit Log) ได้ในคลิกเดียว
-              </p>
-              <button
-                type="button"
-                onClick={handleCreateNewSheet}
-                disabled={isCreating}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-emerald-500 disabled:opacity-50"
-              >
-                {isCreating ? (
-                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Plus className="h-3.5 w-3.5" />
-                )}
-                <span>สร้าง Google Sheets อัตโนมัติ (ครบ 8 หมวด)</span>
-              </button>
-            </div>
-          )}
+          </div>
 
-          {/* Manual ID Input */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
-              หรือระบุ Google Spreadsheet ID ด้วยตนเอง:
-            </label>
-            <div className="mt-1 flex gap-2">
+          {/* No-Login Bridge (Apps Script Web App) */}
+          <div className="rounded-xl border border-sky-200 bg-sky-50/70 p-4 dark:border-sky-900/50 dark:bg-sky-950/20 space-y-3">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-start gap-2">
+                <Zap className="h-4 w-4 text-sky-600 dark:text-sky-400 shrink-0 mt-0.5" />
+                <div>
+                  <h4 className="text-xs font-bold text-slate-900 dark:text-white">
+                    ซิงค์ 2 ทางและอัปโหลดเข้า Drive อัตโนมัติ โดยไม่ต้องเข้า Google (Apps Script Web App)
+                  </h4>
+                  <p className="mt-0.5 text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
+                    นำโค้ดสำเร็จรูปด้านล่างไปวางใน Google Sheet ครั้งเดียว จากนั้นวาง Web App URL (/exec) ระบบจะอ่าน-เขียน Sheets และอัปโหลดรูปเข้าโฟลเดอร์ Drive ได้ทันทีทุกเครื่องโดยไม่ต้องล็อกอิน Google
+                  </p>
+                </div>
+              </div>
+              {isBridgeReady && (
+                <span className="shrink-0 rounded-md bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300">
+                  พร้อมใช้งาน
+                </span>
+              )}
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                type="url"
+                value={appsScriptUrl}
+                onChange={(e) => setAppsScriptUrl(e.target.value)}
+                placeholder="https://script.google.com/macros/s/.../exec"
+                className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-800 shadow-sm focus:border-sky-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+              />
+              <div className="flex gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleSaveBridgeUrl}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                >
+                  บันทึก URL
+                </button>
+                <button
+                  type="button"
+                  onClick={handleTestBridge}
+                  disabled={isTestingBridge || !appsScriptUrl.trim()}
+                  className="inline-flex items-center gap-1 rounded-lg bg-sky-600 px-3 py-2 text-xs font-bold text-white shadow-sm hover:bg-sky-500 disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${isTestingBridge ? 'animate-spin' : ''}`} />
+                  <span>ทดสอบ</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-sky-200/80 bg-white/80 p-3 dark:border-slate-800 dark:bg-slate-900/60 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowScriptCode((prev) => !prev)}
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-sky-700 hover:underline dark:text-sky-400"
+                >
+                  <Code2 className="h-3.5 w-3.5" />
+                  <span>ขั้นตอนติดตั้ง & โค้ด Apps Script (ผูก Sheet & Drive ID แล้ว)</span>
+                  {showScriptCode ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCopyAppsScript}
+                  className="inline-flex items-center gap-1 rounded-lg border border-sky-300 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-700 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-900/40 dark:text-sky-300"
+                >
+                  {copiedScript ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                  <span>{copiedScript ? 'คัดลอกโค้ดแล้ว!' : 'คัดลอกโค้ด Apps Script'}</span>
+                </button>
+              </div>
+
+              <ol className="list-decimal list-inside space-y-0.5 text-[11px] text-slate-600 dark:text-slate-400">
+                <li>เปิดสเปรดชีต &gt; เมนู <strong>ส่วนขยาย (Extensions) &gt; Apps Script</strong> แล้ววางโค้ดที่คัดลอกแทนของเดิม</li>
+                <li>กด <strong>ทำให้ใช้งานได้ (Deploy) &gt; รายการใหม่ &gt; เว็บแอป</strong></li>
+                <li>ตั้งค่า Execute as: <strong>ฉัน (Me)</strong> · Who has access: <strong>ทุกคน (Anyone)</strong> แล้วนำลิงก์ <code>/exec</code> มาวางด้านบน</li>
+              </ol>
+
+              {showScriptCode && (
+                <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-slate-950 p-3 text-[10px] font-mono text-emerald-300">
+                  {GENERATED_APPS_SCRIPT_CODE}
+                </pre>
+              )}
+            </div>
+          </div>
+
+          {/* Manual Spreadsheet & Drive Folder ID Inputs */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                Google Spreadsheet ID (หรือวางลิงก์):
+              </label>
               <input
                 type="text"
                 value={spreadsheetId}
                 onChange={(e) => setSpreadsheetId(e.target.value)}
-                placeholder="เช่น 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms"
-                className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-800 shadow-sm focus:border-sky-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                placeholder={DEFAULT_SPREADSHEET_ID}
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-800 shadow-sm focus:border-sky-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
               />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                Google Drive Folder ID (หรือวางลิงก์):
+              </label>
+              <input
+                type="text"
+                value={driveFolderId}
+                onChange={(e) => setDriveFolderId(e.target.value)}
+                placeholder={DEFAULT_DRIVE_FOLDER_ID}
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-800 shadow-sm focus:border-sky-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+              />
+            </div>
+            <div className="sm:col-span-2 flex justify-end">
               <button
                 type="button"
-                onClick={handleSaveCustomId}
-                className="rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                onClick={handleSaveCustomIds}
+                className="rounded-lg border border-slate-200 bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
               >
-                บันทึก ID
+                บันทึกการตั้งค่า ID
               </button>
             </div>
           </div>
@@ -607,14 +779,14 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
                   ผลตรวจรอซิงค์: {pendingCount} รายการ · กองรถ: {vehicles.length} คัน · เจ้าหน้าที่: {staffList.length} ท่าน
                 </p>
                 <p className="text-[11px] text-slate-400">
-                  ซิงค์ประวัติและสถานะล่าสุดขึ้น Sheets หรือดึงข้อมูลคืนสู่ระบบ
+                  ดึงข้อมูลจากชีต (อ่านได้ทันทีเมื่อแชร์สาธารณะ/Apps Script) หรือซิงค์ข้อมูลทั้งหมดขึ้นชีต & Drive
                 </p>
               </div>
 
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  disabled={isPullingData || !spreadsheetId}
+                  disabled={isPullingData || !cleanCurrentSheetId}
                   onClick={handlePullDataFromSheets}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-sky-300 bg-sky-50 px-3 py-1.5 text-xs font-bold text-sky-700 hover:bg-sky-100 disabled:opacity-50 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-300"
                   title="ดึงข้อมูลกองรถและเจ้าหน้าที่จาก Google Sheets คืนสู่ระบบ"
@@ -625,7 +797,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
 
                 <button
                   type="button"
-                  disabled={isSyncingAll || !spreadsheetId}
+                  disabled={isSyncingAll || !cleanCurrentSheetId}
                   onClick={handleSyncAllPending}
                   className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-emerald-500 disabled:opacity-50"
                   title="อัปโหลดผลตรวจ กองรถ และเจ้าหน้าที่ขึ้น Sheets ทั้งหมด"
@@ -634,6 +806,58 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
                   <span>{isSyncingAll ? 'กำลังซิงค์...' : 'ซิงค์ข้อมูลขึ้นชีต'}</span>
                 </button>
               </div>
+            </div>
+          </div>
+
+          {/* Optional Direct Google Sign-In Section */}
+          <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3.5 dark:border-slate-800 dark:bg-slate-850">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-xs font-semibold text-slate-900 dark:text-white">
+                  ทางเลือกเสริม: บัญชี Google โดยตรง (ไม่จำเป็นต้องใช้หากตั้งค่า Apps Script แล้ว)
+                </p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {googleUser ? `เชื่อมต่อแล้ว: ${googleUser.email}` : 'ไม่ได้ลงชื่อเข้าใช้ Google (กำลังใช้งานโหมดไม่ต้องเข้า Google)'}
+                </p>
+              </div>
+
+              {!googleUser ? (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleGoogleSignIn(true)}
+                    disabled={isLoggingIn}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  >
+                    <LogIn className="h-3.5 w-3.5 text-sky-600" />
+                    {isLoggingIn ? 'กำลังเชื่อมต่อ...' : 'ลงชื่อเข้าใช้ Google'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCreateNewSheet}
+                    disabled={isCreating}
+                    className="inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+                  >
+                    {isCreating ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+                    <span>สร้างชีตใหม่</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <span className="flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                    <CheckCircle2 className="h-4 w-4" /> เชื่อมต่อแล้ว
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleCreateNewSheet}
+                    disabled={isCreating}
+                    className="inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+                  >
+                    {isCreating ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+                    <span>สร้างชีตใหม่</span>
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 

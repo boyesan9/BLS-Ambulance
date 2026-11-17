@@ -6,6 +6,12 @@ import {
   MasterDatabasePayload,
   AmbulanceVehicle,
 } from '../types';
+import {
+  callAppsScriptBridge,
+  getActiveAppsScriptUrl,
+  getActiveDriveFolderId,
+} from './googleBridge';
+import { DEFAULT_DRIVE_FOLDER_URL } from './storage';
 
 // Convert base64 data URL to Blob
 export function dataUrlToBlob(dataUrl: string): { blob: Blob; mimeType: string } {
@@ -61,13 +67,24 @@ export function formatGoogleApiError(
   };
 }
 
-// Find or create inspection media folder in Google Drive
+// Find or create inspection media folder inside the configured Google Drive parent folder
 export async function getOrCreateInspectionFolder(
   accessToken: string,
-  folderName = 'BLS_Ambulance_Inspections_Media'
+  folderName = 'BLS_Ambulance_Inspections_Media',
+  parentFolderId = getActiveDriveFolderId()
 ): Promise<{ folderId: string; folderUrl: string }> {
-  // Search for existing folder
-  const query = `name = '${folderName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+  if (!accessToken) {
+    return {
+      folderId: parentFolderId,
+      folderUrl: parentFolderId
+        ? `https://drive.google.com/drive/folders/${parentFolderId}`
+        : DEFAULT_DRIVE_FOLDER_URL,
+    };
+  }
+
+  // Search for existing folder inside configured parent folder first
+  const parentClause = parentFolderId ? ` and '${parentFolderId}' in parents` : '';
+  const query = `name = '${folderName}'${parentClause} and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
   const searchRes = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,webViewLink)`,
     {
@@ -88,17 +105,22 @@ export async function getOrCreateInspectionFolder(
     throw new Error(err.error?.message || `ไม่สามารถเข้าถึง Google Drive ได้ (${searchRes.status})`);
   }
 
-  // Create new folder
+  // Create new folder inside configured parent folder
+  const bodyPayload: Record<string, any> = {
+    name: folderName,
+    mimeType: 'application/vnd.google-apps.folder',
+  };
+  if (parentFolderId) {
+    bodyPayload.parents = [parentFolderId];
+  }
+
   const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      name: folderName,
-      mimeType: 'application/vnd.google-apps.folder',
-    }),
+    body: JSON.stringify(bodyPayload),
   });
 
   if (!createRes.ok) {
@@ -113,13 +135,39 @@ export async function getOrCreateInspectionFolder(
   };
 }
 
-// Upload a single file to Google Drive using multipart upload
+// Upload a single file to Google Drive using multipart upload (or Apps Script Bridge when no OAuth token)
 export async function uploadFileToDrive(
   accessToken: string,
   fileName: string,
   dataUrl: string,
-  folderId?: string
-): Promise<{ fileId: string; webViewLink: string }> {
+  folderId?: string,
+  appsScriptSubfolderName?: string
+): Promise<{ fileId: string; webViewLink: string; folderId?: string; folderUrl?: string }> {
+  if (!accessToken && getActiveAppsScriptUrl()) {
+    const mimeMatch = dataUrl.match(/^data:([^;]+);base64,/);
+    const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+    const base64Data = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+    const res = await callAppsScriptBridge<{
+      ok: boolean;
+      fileId: string;
+      webViewLink: string;
+      folderId?: string;
+      folderUrl?: string;
+    }>('uploadFile', {
+      driveFolderId: folderId || getActiveDriveFolderId(),
+      folderName: appsScriptSubfolderName || '',
+      fileName,
+      mimeType,
+      base64Data,
+    });
+    return {
+      fileId: res.fileId,
+      webViewLink: res.webViewLink,
+      folderId: res.folderId,
+      folderUrl: res.folderUrl,
+    };
+  }
+
   const { blob, mimeType } = dataUrlToBlob(dataUrl);
 
   const metadata: Record<string, any> = {
@@ -189,7 +237,15 @@ export async function uploadInspectionMediaToDrive(
     if (photoDataUrl && photoDataUrl.startsWith('data:')) {
       const fileName = `${safeCode}_${key.toUpperCase()}_${safeId}.jpg`;
       try {
-        const uploaded = await uploadFileToDrive(accessToken, fileName, photoDataUrl, folderId);
+        const uploaded = await uploadFileToDrive(
+          accessToken,
+          fileName,
+          photoDataUrl,
+          folderId,
+          'BLS_Ambulance_Inspections_Media'
+        );
+        if (uploaded.folderUrl) links.folderUrl = uploaded.folderUrl;
+        if (uploaded.folderId) links.folderId = uploaded.folderId;
         if (key === 'front') links.frontPhotoUrl = uploaded.webViewLink;
         if (key === 'rear') links.rearPhotoUrl = uploaded.webViewLink;
         if (key === 'left') links.leftPhotoUrl = uploaded.webViewLink;
@@ -208,8 +264,11 @@ export async function uploadInspectionMediaToDrive(
         accessToken,
         docName,
         record.documentAttachment.dataUrl,
-        folderId
+        folderId,
+        'BLS_Ambulance_Inspections_Media'
       );
+      if (uploadedDoc.folderUrl) links.folderUrl = uploadedDoc.folderUrl;
+      if (uploadedDoc.folderId) links.folderId = uploadedDoc.folderId;
       links.documentUrl = uploadedDoc.webViewLink;
     } catch (e) {
       console.warn('Failed to upload document attachment to Google Drive', e);
@@ -233,12 +292,21 @@ export async function uploadDamagePhotosToDrive(
   const driveAdditionalPhotoUrls: string[] = [];
   let uploadError: any = null;
 
+  let resolvedFolderUrl = folderUrl;
+
   // 1. Upload main photo
   if (item.photoUrl && item.photoUrl.startsWith('data:')) {
     const fileName = `${safeCode}_DAMAGE_${safePos}_${safeId}_MAIN.jpg`;
     try {
-      const uploaded = await uploadFileToDrive(accessToken, fileName, item.photoUrl, folderId);
+      const uploaded = await uploadFileToDrive(
+        accessToken,
+        fileName,
+        item.photoUrl,
+        folderId,
+        'BLS_Vehicle_Damage_Media'
+      );
       drivePhotoUrl = uploaded.webViewLink;
+      if (uploaded.folderUrl) resolvedFolderUrl = uploaded.folderUrl;
     } catch (e: any) {
       console.warn('Failed to upload main damage photo to Google Drive:', e);
       uploadError = e;
@@ -252,8 +320,15 @@ export async function uploadDamagePhotosToDrive(
       if (pUrl && pUrl.startsWith('data:')) {
         const fileName = `${safeCode}_DAMAGE_${safePos}_${safeId}_SUB${i + 1}.jpg`;
         try {
-          const uploaded = await uploadFileToDrive(accessToken, fileName, pUrl, folderId);
+          const uploaded = await uploadFileToDrive(
+            accessToken,
+            fileName,
+            pUrl,
+            folderId,
+            'BLS_Vehicle_Damage_Media'
+          );
           driveAdditionalPhotoUrls.push(uploaded.webViewLink);
+          if (uploaded.folderUrl) resolvedFolderUrl = uploaded.folderUrl;
         } catch (e: any) {
           console.warn(`Failed to upload sub-damage photo ${i + 1} to Google Drive:`, e);
           if (!uploadError) uploadError = e;
@@ -269,7 +344,7 @@ export async function uploadDamagePhotosToDrive(
   return {
     drivePhotoUrl,
     driveAdditionalPhotoUrls,
-    driveFolderUrl: folderUrl,
+    driveFolderUrl: resolvedFolderUrl,
   };
 }
 
@@ -283,11 +358,19 @@ export async function uploadFuelReceiptToDrive(
   const safeId = log.id.slice(-6);
 
   let receiptDriveUrl: string | undefined;
+  let resolvedFolderUrl = folderUrl;
   if (log.receiptPhotoUrl && log.receiptPhotoUrl.startsWith('data:')) {
     const fileName = `${safeCode}_FUEL_RECEIPT_${safeId}.jpg`;
     try {
-      const uploaded = await uploadFileToDrive(accessToken, fileName, log.receiptPhotoUrl, folderId);
+      const uploaded = await uploadFileToDrive(
+        accessToken,
+        fileName,
+        log.receiptPhotoUrl,
+        folderId,
+        'BLS_Fuel_Receipts_Media'
+      );
       receiptDriveUrl = uploaded.webViewLink;
+      if (uploaded.folderUrl) resolvedFolderUrl = uploaded.folderUrl;
     } catch (e: any) {
       console.warn('Failed to upload fuel slip to Google Drive:', e);
       throw new Error(`ไม่สามารถอัปโหลดสลิปค่าน้ำมันไปยัง Google Drive ได้: ${e.message || e}`);
@@ -296,7 +379,7 @@ export async function uploadFuelReceiptToDrive(
 
   return {
     receiptDriveUrl,
-    driveFolderUrl: folderUrl,
+    driveFolderUrl: resolvedFolderUrl,
   };
 }
 
@@ -310,6 +393,7 @@ export async function uploadVehiclePhotoToDrive(
   const safeId = vehicle.id.slice(-6);
 
   let drivePhotoUrl: string | undefined;
+  let resolvedFolderUrl = folderUrl;
   if (
     vehicle.imageUrl &&
     vehicle.imageUrl.startsWith('data:image/') &&
@@ -317,8 +401,15 @@ export async function uploadVehiclePhotoToDrive(
   ) {
     const fileName = `${safeCode}_VEHICLE_${safeId}.jpg`;
     try {
-      const uploaded = await uploadFileToDrive(accessToken, fileName, vehicle.imageUrl, folderId);
+      const uploaded = await uploadFileToDrive(
+        accessToken,
+        fileName,
+        vehicle.imageUrl,
+        folderId,
+        'BLS_Fleet_Vehicles_Media'
+      );
       drivePhotoUrl = uploaded.webViewLink;
+      if (uploaded.folderUrl) resolvedFolderUrl = uploaded.folderUrl;
     } catch (e: any) {
       console.warn('Failed to upload vehicle photo to Google Drive:', e);
       throw new Error(`ไม่สามารถอัปโหลดรูปรถไปยัง Google Drive ได้: ${e.message || e}`);
@@ -327,7 +418,7 @@ export async function uploadVehiclePhotoToDrive(
 
   return {
     drivePhotoUrl,
-    driveFolderUrl: folderUrl,
+    driveFolderUrl: resolvedFolderUrl,
   };
 }
 
@@ -372,7 +463,24 @@ export async function saveMasterDatabaseToDrive(
   accessToken: string,
   payload: MasterDatabasePayload
 ): Promise<{ fileId: string; modifiedTime: string }> {
-  const query = `name = '${MASTER_DB_FILENAME}' and trashed = false`;
+  const rootFolderId = getActiveDriveFolderId();
+  if (!accessToken && getActiveAppsScriptUrl()) {
+    const res = await callAppsScriptBridge<{
+      ok: boolean;
+      fileId: string;
+      modifiedTime: string;
+    }>('saveMasterDb', {
+      driveFolderId: rootFolderId,
+      payload,
+    });
+    return {
+      fileId: res.fileId,
+      modifiedTime: res.modifiedTime || new Date().toISOString(),
+    };
+  }
+
+  const parentClause = rootFolderId ? ` and '${rootFolderId}' in parents` : '';
+  const query = `name = '${MASTER_DB_FILENAME}'${parentClause} and trashed = false`;
   const searchRes = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&orderBy=modifiedTime desc&fields=files(id,name,modifiedTime)`,
     {
@@ -392,11 +500,14 @@ export async function saveMasterDatabaseToDrive(
   const delimiter = `\r\n--${boundary}\r\n`;
   const closeDelimiter = `\r\n--${boundary}--`;
 
-  const metadata = {
+  const metadata: Record<string, any> = {
     name: MASTER_DB_FILENAME,
     mimeType: 'application/json',
     description: 'ฐานข้อมูลกลางระบบตรวจสภาพรถกู้ชีพ BLS สำรองบน Google Drive',
   };
+  if (!existingFileId && rootFolderId) {
+    metadata.parents = [rootFolderId];
+  }
 
   const jsonString = JSON.stringify(payload, null, 2);
   const multipartBody =
@@ -443,17 +554,58 @@ export async function loadMasterDatabaseFromDrive(
   accessToken: string
 ): Promise<MasterDatabasePayload | null> {
   try {
-    const query = `name = '${MASTER_DB_FILENAME}' and trashed = false`;
-    const searchRes = await fetch(
+    const rootFolderId = getActiveDriveFolderId();
+    if (!accessToken && getActiveAppsScriptUrl()) {
+      const res = await callAppsScriptBridge<{
+        ok: boolean;
+        payload: MasterDatabasePayload | null;
+      }>('loadMasterDb', {
+        driveFolderId: rootFolderId,
+      });
+      if (res?.payload && typeof res.payload === 'object') {
+        const rawData = res.payload;
+        return {
+          inspections: Array.isArray(rawData.inspections) ? rawData.inspections : [],
+          vehicles: Array.isArray(rawData.vehicles) ? rawData.vehicles : [],
+          staffList: Array.isArray(rawData.staffList) ? rawData.staffList : [],
+          damageRecords: Array.isArray(rawData.damageRecords) ? rawData.damageRecords : [],
+          fuelLogs: Array.isArray(rawData.fuelLogs) ? rawData.fuelLogs : [],
+          equipmentInspections: Array.isArray(rawData.equipmentInspections) ? rawData.equipmentInspections : [],
+          equipmentRequisitions: Array.isArray(rawData.equipmentRequisitions) ? rawData.equipmentRequisitions : [],
+          spreadsheetId: rawData.spreadsheetId,
+          spreadsheetUrl: rawData.spreadsheetUrl,
+          lastSyncedAt: rawData.lastSyncedAt || new Date().toLocaleString('th-TH'),
+          version: rawData.version || 1,
+        };
+      }
+      return null;
+    }
+
+    if (!accessToken) return null;
+
+    const parentClause = rootFolderId ? ` and '${rootFolderId}' in parents` : '';
+    const query = `name = '${MASTER_DB_FILENAME}'${parentClause} and trashed = false`;
+    let searchRes = await fetch(
       `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&orderBy=modifiedTime desc&fields=files(id,name,modifiedTime)`,
       {
         headers: { Authorization: `Bearer ${accessToken}` },
       }
     );
 
-    if (!searchRes.ok) return null;
-    const searchData = await searchRes.json();
-    if (!searchData.files || searchData.files.length === 0) return null;
+    let searchData = searchRes.ok ? await searchRes.json() : null;
+    if ((!searchData?.files || searchData.files.length === 0) && rootFolderId) {
+      // Fallback global search if older snapshot was saved outside target folder
+      const fallbackQuery = `name = '${MASTER_DB_FILENAME}' and trashed = false`;
+      searchRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(fallbackQuery)}&orderBy=modifiedTime desc&fields=files(id,name,modifiedTime)`,
+        {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        }
+      );
+      searchData = searchRes.ok ? await searchRes.json() : null;
+    }
+
+    if (!searchData?.files || searchData.files.length === 0) return null;
 
     const fileId = searchData.files[0].id;
     const downloadRes = await fetch(

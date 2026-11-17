@@ -12,6 +12,11 @@ import {
 import { createFreshChecklist } from '../data/defaultChecklist';
 import { ORGANIZATION_NAME, createFreshEquipmentChecklist, getDefaultThaiDateParts } from '../data/equipmentChecklist';
 import { generateSvgDamagePlaceholder, toDisplayableDriveImageUrl } from './storage';
+import {
+  callAppsScriptBridge,
+  getActiveAppsScriptUrl,
+  readSheetValuesWithoutLogin,
+} from './googleBridge';
 
 export interface SheetCreationResult {
   spreadsheetId: string;
@@ -163,18 +168,6 @@ export async function ensureAllSpreadsheetTabs(
   spreadsheetId: string,
   accessToken: string
 ): Promise<void> {
-  const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties`;
-  const res = await fetch(getUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-
-  if (!res.ok) return;
-
-  const data = await res.json();
-  const existingTitles = new Set(
-    (data.sheets || []).map((s: any) => s.properties?.title)
-  );
-
   const neededSheets = [
     { title: INSPECTION_SHEET_TITLE, headers: INSPECTION_HEADERS },
     { title: VEHICLES_SHEET_TITLE, headers: VEHICLE_HEADERS },
@@ -186,6 +179,24 @@ export async function ensureAllSpreadsheetTabs(
     { title: REQUISITION_SHEET_TITLE, headers: REQUISITION_HEADERS },
   ];
 
+  if (!accessToken) {
+    if (getActiveAppsScriptUrl()) {
+      await callAppsScriptBridge('ensureTabs', { spreadsheetId, tabs: neededSheets });
+    }
+    return;
+  }
+
+  const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties`;
+  const res = await fetch(getUrl, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!res.ok) return;
+
+  const data = await res.json();
+  const existingTitles = new Set(
+    (data.sheets || []).map((s: any) => s.properties?.title)
+  );
   const requestsToAdd: any[] = [];
   for (const item of neededSheets) {
     if (!existingTitles.has(item.title)) {
@@ -383,8 +394,18 @@ export async function appendInspectionToSheet(
   record: InspectionRecord,
   accessToken: string
 ): Promise<{ success: boolean; updatedRange?: string }> {
-  await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
   const rowValues = formatRecordForSheet(record);
+  if (!accessToken && getActiveAppsScriptUrl()) {
+    await callAppsScriptBridge('appendRow', {
+      spreadsheetId,
+      sheetTitle: INSPECTION_SHEET_TITLE,
+      headers: INSPECTION_HEADERS,
+      row: rowValues,
+    });
+    return { success: true };
+  }
+
+  await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
 
   const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
     INSPECTION_SHEET_TITLE
@@ -420,6 +441,16 @@ export async function syncInspectionsToSheet(
   records: InspectionRecord[],
   accessToken: string
 ): Promise<void> {
+  if (!accessToken && getActiveAppsScriptUrl()) {
+    await callAppsScriptBridge('syncTab', {
+      spreadsheetId,
+      sheetTitle: INSPECTION_SHEET_TITLE,
+      headers: INSPECTION_HEADERS,
+      rows: records.map(formatRecordForSheet),
+    });
+    return;
+  }
+
   await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
 
   const clearUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
@@ -469,8 +500,43 @@ export async function syncVehiclesToSheet(
   vehicles: AmbulanceVehicle[],
   accessToken: string
 ): Promise<void> {
-  await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
   const nowStr = new Date().toLocaleString('th-TH');
+  if (!accessToken && getActiveAppsScriptUrl()) {
+    const bridgeRows = vehicles.map((v) => {
+      const photoLink =
+        v.drivePhotoUrl ||
+        (v.imageUrl && !v.imageUrl.startsWith('data:') ? v.imageUrl : '') ||
+        '';
+      return [
+        v.code,
+        v.plateNumber,
+        v.brandModel || 'Toyota Commuter BLS',
+        v.year || '2024',
+        v.status === 'available'
+          ? 'พร้อมปฏิบัติการ'
+          : v.status === 'issue_found'
+          ? 'พบข้อบกพร่อง'
+          : 'งดใช้-ส่งซ่อมบำรุง',
+        v.currentOdometer || 0,
+        v.lastInspectionDate || '-',
+        v.lastInspector || '-',
+        v.notes || '',
+        v.id,
+        nowStr,
+        photoLink,
+        v.driveFolderUrl || '',
+      ];
+    });
+    await callAppsScriptBridge('syncTab', {
+      spreadsheetId,
+      sheetTitle: VEHICLES_SHEET_TITLE,
+      headers: VEHICLE_HEADERS,
+      rows: bridgeRows,
+    });
+    return;
+  }
+
+  await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
 
   // Ensure header row includes Drive photo columns (A1:M1)
   await fetch(
@@ -546,8 +612,30 @@ export async function syncStaffToSheet(
   staffList: UserProfile[],
   accessToken: string
 ): Promise<void> {
-  await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
   const nowStr = new Date().toLocaleString('th-TH');
+  if (!accessToken && getActiveAppsScriptUrl()) {
+    const bridgeRows = staffList.map((s) => [
+      s.employeeId,
+      s.name,
+      s.role === 'admin' ? 'ผู้ดูแลระบบ (Admin)' : 'พนักงานทั่วไป (Staff)',
+      s.position || 'เจ้าหน้าที่กู้ชีพ',
+      s.department || 'ฝ่ายปฏิบัติการกู้ชีพ BLS',
+      s.phone || '-',
+      s.status === 'on_leave' ? 'พักเวร' : s.status === 'inactive' ? 'ไม่ได้ปฏิบัติงาน' : 'พร้อมปฏิบัติงาน',
+      s.email || '-',
+      s.id,
+      nowStr,
+    ]);
+    await callAppsScriptBridge('syncTab', {
+      spreadsheetId,
+      sheetTitle: STAFF_SHEET_TITLE,
+      headers: STAFF_HEADERS,
+      rows: bridgeRows,
+    });
+    return;
+  }
+
+  await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
 
   const rows = staffList.map((s) => [
     s.employeeId,
@@ -596,8 +684,6 @@ export async function appendAuditLogToSheet(
   accessToken: string
 ): Promise<void> {
   try {
-    await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
-
     const row = [
       entry.timestamp,
       entry.action,
@@ -607,6 +693,18 @@ export async function appendAuditLogToSheet(
       entry.details,
       entry.id,
     ];
+
+    if (!accessToken && getActiveAppsScriptUrl()) {
+      await callAppsScriptBridge('appendRow', {
+        spreadsheetId,
+        sheetTitle: AUDIT_LOG_SHEET_TITLE,
+        headers: AUDIT_LOG_HEADERS,
+        row,
+      });
+      return;
+    }
+
+    await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
 
     const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
       AUDIT_LOG_SHEET_TITLE
@@ -630,7 +728,7 @@ export async function appendAuditLogToSheet(
  */
 export async function pullAllDataFromGoogleSheets(
   spreadsheetId: string,
-  accessToken: string
+  accessToken = ''
 ): Promise<{
   vehicles: AmbulanceVehicle[];
   staffList: UserProfile[];
@@ -644,18 +742,56 @@ export async function pullAllDataFromGoogleSheets(
 }> {
   const pulledAt = new Date().toLocaleString('th-TH');
 
-  // 1. Pull Vehicles
-  const vehiclesUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
-    VEHICLES_SHEET_TITLE
-  )}!A2:M100`;
-  const vehRes = await fetch(vehiclesUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  // Helper to fetch rows using OAuth token (when signed in) OR login-free bridge / public sheet read
+  let bridgeTabsCache: Record<string, string[][]> | null = null;
+  const fetchTabRows = async (sheetTitle: string, rangeSuffix: string): Promise<string[][]> => {
+    if (accessToken) {
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+        sheetTitle
+      )}!${rangeSuffix}`;
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return Array.isArray(data.values) ? data.values : [];
+      }
+      return [];
+    }
 
+    if (!bridgeTabsCache && getActiveAppsScriptUrl()) {
+      try {
+        const batchRes = await callAppsScriptBridge<{ ok: boolean; tabs: Record<string, string[][]> }>('readAllTabs', {
+          spreadsheetId,
+          sheetTitles: [
+            VEHICLES_SHEET_TITLE,
+            STAFF_SHEET_TITLE,
+            INSPECTION_SHEET_TITLE,
+            DAMAGE_SHEET_TITLE,
+            FUEL_SHEET_TITLE,
+            EQUIPMENT_SHEET_TITLE,
+            REQUISITION_SHEET_TITLE,
+          ],
+        });
+        bridgeTabsCache = batchRes?.tabs || {};
+      } catch (err) {
+        console.warn('Apps Script readAllTabs warning:', err);
+        bridgeTabsCache = {};
+      }
+    }
+
+    if (bridgeTabsCache && Array.isArray(bridgeTabsCache[sheetTitle])) {
+      return bridgeTabsCache[sheetTitle];
+    }
+
+    return await readSheetValuesWithoutLogin(spreadsheetId, sheetTitle, rangeSuffix);
+  };
+
+  // 1. Pull Vehicles
+  const vehRows = await fetchTabRows(VEHICLES_SHEET_TITLE, 'A2:M100');
   const vehicles: AmbulanceVehicle[] = [];
-  if (vehRes.ok) {
-    const data = await vehRes.json();
-    const rows: string[][] = data.values || [];
+  if (vehRows.length > 0) {
+    const rows: string[][] = vehRows;
     for (const r of rows) {
       if (r[0] && r[1]) {
         // Has code and plateNumber
@@ -690,17 +826,10 @@ export async function pullAllDataFromGoogleSheets(
   }
 
   // 2. Pull Staff
-  const staffUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
-    STAFF_SHEET_TITLE
-  )}!A2:J100`;
-  const staffRes = await fetch(staffUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-
+  const staffRows = await fetchTabRows(STAFF_SHEET_TITLE, 'A2:J100');
   const staffList: UserProfile[] = [];
-  if (staffRes.ok) {
-    const data = await staffRes.json();
-    const rows: string[][] = data.values || [];
+  if (staffRows.length > 0) {
+    const rows: string[][] = staffRows;
     for (const r of rows) {
       if (r[0] && r[1]) {
         // Has employeeId and name
@@ -731,17 +860,10 @@ export async function pullAllDataFromGoogleSheets(
   }
 
   // 3. Pull Inspections (Tab 1: บันทึกการตรวจรถกู้ชีพ_BLS)
-  const inspUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
-    INSPECTION_SHEET_TITLE
-  )}!A2:R1000`;
-  const inspRes = await fetch(inspUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-
+  const inspRows = await fetchTabRows(INSPECTION_SHEET_TITLE, 'A2:R1000');
   const inspections: InspectionRecord[] = [];
-  if (inspRes.ok) {
-    const data = await inspRes.json();
-    const rows: string[][] = data.values || [];
+  if (inspRows.length > 0) {
+    const rows: string[][] = inspRows;
     for (let idx = 0; idx < rows.length; idx++) {
       const r = rows[idx];
       if (r && r[0] && r[2]) {
@@ -831,17 +953,10 @@ export async function pullAllDataFromGoogleSheets(
   const inspectionsCount = inspections.length;
 
   // 4. Pull Damage Records
-  const damageUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
-    DAMAGE_SHEET_TITLE
-  )}!A2:N200`;
-  const damageRes = await fetch(damageUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-
+  const damageRows = await fetchTabRows(DAMAGE_SHEET_TITLE, 'A2:N200');
   const damageRecords: VehicleDamageItem[] = [];
-  if (damageRes.ok) {
-    const data = await damageRes.json();
-    const rows: string[][] = data.values || [];
+  if (damageRows.length > 0) {
+    const rows: string[][] = damageRows;
     for (const r of rows) {
       if (r[1] && r[3]) {
         // Has vehicleCode and positionArea
@@ -883,17 +998,10 @@ export async function pullAllDataFromGoogleSheets(
   }
 
   // 5. Pull Fuel Logs
-  const fuelUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
-    FUEL_SHEET_TITLE
-  )}!A2:R200`;
-  const fuelRes = await fetch(fuelUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-
+  const fuelRows = await fetchTabRows(FUEL_SHEET_TITLE, 'A2:R200');
   const fuelLogs: FuelLogRecord[] = [];
-  if (fuelRes.ok) {
-    const data = await fuelRes.json();
-    const rows: string[][] = data.values || [];
+  if (fuelRows.length > 0) {
+    const rows: string[][] = fuelRows;
     for (const r of rows) {
       if (r[0] && r[1]) {
         const matchedVeh = vehicles.find(
@@ -927,17 +1035,10 @@ export async function pullAllDataFromGoogleSheets(
   }
 
   // 6. Pull Equipment Inspections
-  const eqUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
-    EQUIPMENT_SHEET_TITLE
-  )}!A2:K500`;
-  const eqRes = await fetch(eqUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-
+  const eqRows = await fetchTabRows(EQUIPMENT_SHEET_TITLE, 'A2:K500');
   const equipmentInspections: EquipmentInspectionRecord[] = [];
-  if (eqRes.ok) {
-    const data = await eqRes.json();
-    const rows: string[][] = data.values || [];
+  if (eqRows.length > 0) {
+    const rows: string[][] = eqRows;
     const defaultDate = getDefaultThaiDateParts();
     for (let idx = 0; idx < rows.length; idx++) {
       const r = rows[idx];
@@ -991,17 +1092,10 @@ export async function pullAllDataFromGoogleSheets(
   }
 
   // 7. Pull Equipment Requisitions
-  const reqUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
-    REQUISITION_SHEET_TITLE
-  )}!A2:N500`;
-  const reqRes = await fetch(reqUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-
+  const reqRows = await fetchTabRows(REQUISITION_SHEET_TITLE, 'A2:N500');
   const equipmentRequisitions: EquipmentRequisitionRecord[] = [];
-  if (reqRes.ok) {
-    const data = await reqRes.json();
-    const rows: string[][] = data.values || [];
+  if (reqRows.length > 0) {
+    const rows: string[][] = reqRows;
     const defaultDate = getDefaultThaiDateParts();
     for (let idx = 0; idx < rows.length; idx++) {
       const r = rows[idx];
@@ -1122,8 +1216,18 @@ export async function appendDamageToSheet(
   item: VehicleDamageItem,
   accessToken: string
 ): Promise<{ success: boolean }> {
-  await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
   const rowValues = formatDamageForSheet(item);
+  if (!accessToken && getActiveAppsScriptUrl()) {
+    await callAppsScriptBridge('appendRow', {
+      spreadsheetId,
+      sheetTitle: DAMAGE_SHEET_TITLE,
+      headers: DAMAGE_HEADERS,
+      row: rowValues,
+    });
+    return { success: true };
+  }
+
+  await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
 
   const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
     DAMAGE_SHEET_TITLE
@@ -1154,6 +1258,16 @@ export async function syncDamageToSheet(
   items: VehicleDamageItem[],
   accessToken: string
 ): Promise<void> {
+  if (!accessToken && getActiveAppsScriptUrl()) {
+    await callAppsScriptBridge('syncTab', {
+      spreadsheetId,
+      sheetTitle: DAMAGE_SHEET_TITLE,
+      headers: DAMAGE_HEADERS,
+      rows: items.map(formatDamageForSheet),
+    });
+    return;
+  }
+
   await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
   const rows = items.map(formatDamageForSheet);
 
@@ -1215,8 +1329,18 @@ export async function appendFuelLogToSheet(
   log: FuelLogRecord,
   accessToken: string
 ): Promise<{ success: boolean }> {
-  await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
   const rowValues = formatFuelLogForSheet(log);
+  if (!accessToken && getActiveAppsScriptUrl()) {
+    await callAppsScriptBridge('appendRow', {
+      spreadsheetId,
+      sheetTitle: FUEL_SHEET_TITLE,
+      headers: FUEL_HEADERS,
+      row: rowValues,
+    });
+    return { success: true };
+  }
+
+  await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
 
   const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
     FUEL_SHEET_TITLE
@@ -1247,6 +1371,16 @@ export async function syncFuelLogsToSheet(
   logs: FuelLogRecord[],
   accessToken: string
 ): Promise<void> {
+  if (!accessToken && getActiveAppsScriptUrl()) {
+    await callAppsScriptBridge('syncTab', {
+      spreadsheetId,
+      sheetTitle: FUEL_SHEET_TITLE,
+      headers: FUEL_HEADERS,
+      rows: logs.map(formatFuelLogForSheet),
+    });
+    return;
+  }
+
   await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
   const rows = logs.map(formatFuelLogForSheet);
 
@@ -1327,8 +1461,18 @@ export async function appendEquipmentInspectionToSheet(
   record: EquipmentInspectionRecord,
   accessToken: string
 ): Promise<{ success: boolean }> {
-  await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
   const rowValues = formatEquipmentRecordForSheet(record);
+  if (!accessToken && getActiveAppsScriptUrl()) {
+    await callAppsScriptBridge('appendRow', {
+      spreadsheetId,
+      sheetTitle: EQUIPMENT_SHEET_TITLE,
+      headers: EQUIPMENT_HEADERS,
+      row: rowValues,
+    });
+    return { success: true };
+  }
+
+  await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
 
   const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
     EQUIPMENT_SHEET_TITLE
@@ -1356,6 +1500,16 @@ export async function syncEquipmentInspectionsToSheet(
   records: EquipmentInspectionRecord[],
   accessToken: string
 ): Promise<void> {
+  if (!accessToken && getActiveAppsScriptUrl()) {
+    await callAppsScriptBridge('syncTab', {
+      spreadsheetId,
+      sheetTitle: EQUIPMENT_SHEET_TITLE,
+      headers: EQUIPMENT_HEADERS,
+      rows: records.map(formatEquipmentRecordForSheet),
+    });
+    return;
+  }
+
   await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
 
   const clearUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
@@ -1434,8 +1588,18 @@ export async function appendRequisitionToSheet(
   record: EquipmentRequisitionRecord,
   accessToken: string
 ): Promise<{ success: boolean }> {
-  await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
   const rowValues = formatRequisitionForSheet(record);
+  if (!accessToken && getActiveAppsScriptUrl()) {
+    await callAppsScriptBridge('appendRow', {
+      spreadsheetId,
+      sheetTitle: REQUISITION_SHEET_TITLE,
+      headers: REQUISITION_HEADERS,
+      row: rowValues,
+    });
+    return { success: true };
+  }
+
+  await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
 
   const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
     REQUISITION_SHEET_TITLE
@@ -1463,6 +1627,16 @@ export async function syncRequisitionsToSheet(
   records: EquipmentRequisitionRecord[],
   accessToken: string
 ): Promise<void> {
+  if (!accessToken && getActiveAppsScriptUrl()) {
+    await callAppsScriptBridge('syncTab', {
+      spreadsheetId,
+      sheetTitle: REQUISITION_SHEET_TITLE,
+      headers: REQUISITION_HEADERS,
+      rows: records.map(formatRequisitionForSheet),
+    });
+    return;
+  }
+
   await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
 
   const clearUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(

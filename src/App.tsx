@@ -105,6 +105,7 @@ import {
   syncInspectionsFromIndexedDb,
   toDisplayableDriveImageUrl,
 } from './services/storage';
+import { getActiveSpreadsheetId, hasNoLoginBridge } from './services/googleBridge';
 import { User } from 'firebase/auth';
 import { CheckCircle2, AlertCircle, ExternalLink, Copy } from 'lucide-react';
 
@@ -267,11 +268,11 @@ export default function App() {
     details: string
   ) => {
     try {
-      const spreadsheetId = googleSheetsConfig.spreadsheetId;
+      const spreadsheetId = googleSheetsConfig.spreadsheetId || getActiveSpreadsheetId();
       if (!spreadsheetId) return;
 
       const token = await getAccessToken();
-      if (!token) return;
+      if (!token && !hasNoLoginBridge()) return;
 
       const operatorName = googleUser?.email
         ? `${currentUser?.name || 'Admin'} (${googleUser.email})`
@@ -288,7 +289,7 @@ export default function App() {
           operator: operatorName,
           details,
         },
-        token
+        token || ''
       );
     } catch (err) {
       console.warn('Audit logging warning:', err);
@@ -476,9 +477,10 @@ export default function App() {
   // Helper to persist current system snapshot into Google Drive master database
   const saveCurrentDatabaseSnapshotToDrive = async (token?: string | null) => {
     try {
-      const activeToken = token || (await getAccessToken());
-      if (!activeToken) return;
+      const activeToken = token || (await getAccessToken()) || '';
+      if (!activeToken && !hasNoLoginBridge()) return;
 
+      const spreadsheetId = googleSheetsConfig.spreadsheetId || getActiveSpreadsheetId();
       const payload: MasterDatabasePayload = {
         inspections: getStoredInspections(),
         vehicles: getStoredVehicles(),
@@ -487,8 +489,10 @@ export default function App() {
         fuelLogs: getStoredFuelLogs(),
         equipmentInspections: getStoredEquipmentInspections(),
         equipmentRequisitions: getStoredEquipmentRequisitions(),
-        spreadsheetId: googleSheetsConfig.spreadsheetId,
-        spreadsheetUrl: googleSheetsConfig.spreadsheetUrl,
+        spreadsheetId,
+        spreadsheetUrl:
+          googleSheetsConfig.spreadsheetUrl ||
+          `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
         lastSyncedAt: new Date().toLocaleString('th-TH'),
         version: 1,
       };
@@ -499,111 +503,94 @@ export default function App() {
     }
   };
 
-  // Master Sync: โหลดข้อมูลจาก Google Drive ก่อน Google Sheets เพื่อให้ข้อมูลถูกต้องและตรงกัน 100%
+  // Master Sync: โหลดข้อมูลจาก Google Drive / Google Sheets โดยไม่บังคับล็อกอิน Google
   const loadDataFromDriveBeforeSheets = async (
     showNotification = false
   ): Promise<{ token: string | null; spreadsheetId: string | null; staffList: UserProfile[] } | null> => {
     setIsSyncingGSheets(true);
     let latestStaffList: UserProfile[] = getStoredStaff();
     try {
-      let token = await getAccessToken();
-      if (!token && showNotification) {
-        const signRes = await googleSignIn({ intent: { type: 'sync' } });
-        if (signRes?.redirected) {
-          return null;
-        }
-        if (signRes?.accessToken && signRes.user) {
-          token = signRes.accessToken;
-          setGoogleUser(signRes.user);
-        }
-      }
-
-      if (!token) {
-        if (showNotification) {
-          setToastNotification({
-            type: 'error',
-            title: 'ยังไม่ได้เชื่อมต่อบัญชี Google',
-            message: 'กรุณาลงชื่อเข้าใช้ Google เพื่อโหลดข้อมูลจาก Google Drive และ Google Sheets',
-          });
-        }
-        return null;
-      }
+      const token = await getAccessToken();
+      const activeToken = token || '';
+      const bridgeActive = hasNoLoginBridge();
 
       // ========================================================
-      // ขั้นตอนที่ 1: โหลดข้อมูลจาก Google Drive ก่อน (Drive First)
+      // ขั้นตอนที่ 1: โหลดข้อมูลจาก Google Drive ก่อน (เฉพาะเมื่อมี Token หรือ Apps Script Bridge)
       // ========================================================
       let driveLoaded = false;
       let driveStats = '';
-      let resolvedSheetId = googleSheetsConfig.spreadsheetId;
+      let resolvedSheetId = googleSheetsConfig.spreadsheetId || getActiveSpreadsheetId();
 
       let driveInspectionsSnapshot: InspectionRecord[] = getStoredInspections();
 
-      try {
-        const driveData = await loadMasterDatabaseFromDrive(token);
-        if (driveData) {
-          driveLoaded = true;
-          if (driveData.vehicles) {
-            const cleanDriveVehicles = driveData.vehicles.filter(
-              (v) => v.id !== 'veh-01' && v.id !== 'veh-02' && v.id !== 'veh-03' && v.id !== 'veh-04'
-            );
-            setVehicles(cleanDriveVehicles);
-            saveVehicles(cleanDriveVehicles);
+      if (activeToken || bridgeActive) {
+        try {
+          const driveData = await loadMasterDatabaseFromDrive(activeToken);
+          if (driveData) {
+            driveLoaded = true;
+            if (driveData.vehicles && driveData.vehicles.length > 0) {
+              const cleanDriveVehicles = driveData.vehicles.filter(
+                (v) => v.id !== 'veh-01' && v.id !== 'veh-02' && v.id !== 'veh-03' && v.id !== 'veh-04'
+              );
+              setVehicles(cleanDriveVehicles);
+              saveVehicles(cleanDriveVehicles);
+            }
+            if (driveData.staffList && driveData.staffList.length > 0) {
+              const cleanDriveStaff = deduplicateStaff(driveData.staffList);
+              latestStaffList = cleanDriveStaff;
+              setStaffList(cleanDriveStaff);
+              saveStaff(cleanDriveStaff);
+              reconcileCurrentUserWithStaff(cleanDriveStaff);
+            }
+            if (driveData.damageRecords) {
+              const cleanDriveDamages = driveData.damageRecords.filter(
+                (d) => d.id !== 'dmg-01' && d.id !== 'dmg-02' && d.id !== 'dmg-03'
+              );
+              setDamageRecords(cleanDriveDamages);
+              saveAllDamageRecords(cleanDriveDamages);
+            }
+            if (driveData.fuelLogs) {
+              const cleanDriveFuel = driveData.fuelLogs.filter(
+                (f) =>
+                  f.id !== 'fuel-01' &&
+                  f.id !== 'fuel-02' &&
+                  f.id !== 'fuel-03' &&
+                  f.id !== 'fuel-04' &&
+                  f.id !== 'fuel-05'
+              );
+              setFuelLogs(cleanDriveFuel);
+              saveAllFuelLogs(cleanDriveFuel);
+            }
+            if (driveData.inspections) {
+              const cleanDriveInspections = driveData.inspections.filter(
+                (i) => i.id !== 'insp-20261107-001' && i.id !== 'insp-20261106-002'
+              );
+              driveInspectionsSnapshot = cleanDriveInspections;
+              setInspections(cleanDriveInspections);
+              replaceAllInspections(cleanDriveInspections);
+            }
+            if (driveData.equipmentInspections) {
+              setEquipmentInspections(driveData.equipmentInspections);
+              saveAllEquipmentInspections(driveData.equipmentInspections);
+            }
+            if (driveData.equipmentRequisitions) {
+              setEquipmentRequisitions(driveData.equipmentRequisitions);
+              saveAllEquipmentRequisitions(driveData.equipmentRequisitions);
+            }
+            if (driveData.spreadsheetId && !resolvedSheetId) {
+              resolvedSheetId = driveData.spreadsheetId;
+            }
+            driveStats = `(ตรวจสภาพ ${driveData.inspections?.length || 0} รายการ, อุปกรณ์ BLS ${driveData.equipmentInspections?.length || 0} รายการ, เบิกอุปกรณ์ ${driveData.equipmentRequisitions?.length || 0} ใบเบิก, รถ ${driveData.vehicles?.length || 0} คัน, รอยตัวรถ ${driveData.damageRecords?.length || 0} จุด, น้ำมัน ${driveData.fuelLogs?.length || 0} รายการ)`;
           }
-          if (driveData.staffList) {
-            const cleanDriveStaff = deduplicateStaff(driveData.staffList);
-            latestStaffList = cleanDriveStaff;
-            setStaffList(cleanDriveStaff);
-            saveStaff(cleanDriveStaff);
-            reconcileCurrentUserWithStaff(cleanDriveStaff);
-          }
-          if (driveData.damageRecords) {
-            const cleanDriveDamages = driveData.damageRecords.filter(
-              (d) => d.id !== 'dmg-01' && d.id !== 'dmg-02' && d.id !== 'dmg-03'
-            );
-            setDamageRecords(cleanDriveDamages);
-            saveAllDamageRecords(cleanDriveDamages);
-          }
-          if (driveData.fuelLogs) {
-            const cleanDriveFuel = driveData.fuelLogs.filter(
-              (f) =>
-                f.id !== 'fuel-01' &&
-                f.id !== 'fuel-02' &&
-                f.id !== 'fuel-03' &&
-                f.id !== 'fuel-04' &&
-                f.id !== 'fuel-05'
-            );
-            setFuelLogs(cleanDriveFuel);
-            saveAllFuelLogs(cleanDriveFuel);
-          }
-          if (driveData.inspections) {
-            const cleanDriveInspections = driveData.inspections.filter(
-              (i) => i.id !== 'insp-20261107-001' && i.id !== 'insp-20261106-002'
-            );
-            driveInspectionsSnapshot = cleanDriveInspections;
-            setInspections(cleanDriveInspections);
-            replaceAllInspections(cleanDriveInspections);
-          }
-          if (driveData.equipmentInspections) {
-            setEquipmentInspections(driveData.equipmentInspections);
-            saveAllEquipmentInspections(driveData.equipmentInspections);
-          }
-          if (driveData.equipmentRequisitions) {
-            setEquipmentRequisitions(driveData.equipmentRequisitions);
-            saveAllEquipmentRequisitions(driveData.equipmentRequisitions);
-          }
-          if (driveData.spreadsheetId && !resolvedSheetId) {
-            resolvedSheetId = driveData.spreadsheetId;
-          }
-          driveStats = `(ตรวจสภาพ ${driveData.inspections?.length || 0} รายการ, อุปกรณ์ BLS ${driveData.equipmentInspections?.length || 0} รายการ, เบิกอุปกรณ์ ${driveData.equipmentRequisitions?.length || 0} ใบเบิก, รถ ${driveData.vehicles?.length || 0} คัน, รอยตัวรถ ${driveData.damageRecords?.length || 0} จุด, น้ำมัน ${driveData.fuelLogs?.length || 0} รายการ)`;
+        } catch (driveErr) {
+          console.warn('Phase 1 (Google Drive Load) warning:', driveErr);
         }
-      } catch (driveErr) {
-        console.warn('Phase 1 (Google Drive Load) warning:', driveErr);
       }
 
-      // ตรวจสอบ Google Spreadsheet ใน Drive หากยังไม่มีในอุปกรณ์นี้
-      if (!resolvedSheetId) {
+      // ตรวจสอบ Google Spreadsheet ใน Drive หากยังไม่มีในอุปกรณ์นี้และมี Token
+      if (!resolvedSheetId && activeToken) {
         try {
-          const found = await findExistingInspectionSpreadsheet(token);
+          const found = await findExistingInspectionSpreadsheet(activeToken);
           if (found) {
             resolvedSheetId = found.spreadsheetId;
             const updatedConfig = {
@@ -621,171 +608,193 @@ export default function App() {
       }
 
       // ========================================================
-      // ขั้นตอนที่ 2: โหลดข้อมูลจาก Google Sheets ตรวจเช็คให้ตรงกัน (Single Source of Truth)
+      // ขั้นตอนที่ 2: โหลดข้อมูลจาก Google Sheets (ทำงานได้ทั้งมี Token, ผ่าน Apps Script หรือชีตสาธารณะโดยไม่ต้องล็อกอิน)
       // ========================================================
       let sheetsLoaded = false;
       if (resolvedSheetId) {
         try {
-          const pulled = await pullAllDataFromGoogleSheets(resolvedSheetId, token);
-          sheetsLoaded = true;
+          const pulled = await pullAllDataFromGoogleSheets(resolvedSheetId, activeToken);
+          const totalPulledCount =
+            pulled.vehicles.length +
+            pulled.staffList.length +
+            pulled.inspections.length +
+            pulled.damageRecords.length +
+            pulled.fuelLogs.length +
+            pulled.equipmentInspections.length +
+            pulled.equipmentRequisitions.length;
 
-          // Reconcile Vehicles: Google Sheets is the Single Source of Truth
-          if (pulled.vehicles) {
-            const cleanSheetVehicles = pulled.vehicles.filter(
-              (v) => v.id !== 'veh-01' && v.id !== 'veh-02' && v.id !== 'veh-03' && v.id !== 'veh-04'
-            );
-            const currentVehs = getStoredVehicles();
-            const localVehMap = new Map(currentVehs.map((v) => [v.id, v]));
-            const reconciledVehicles = cleanSheetVehicles.map((pv) => {
-              const local = localVehMap.get(pv.id);
-              const driveUrl = pv.drivePhotoUrl || local?.drivePhotoUrl;
-              const localImg = local?.imageUrl && !local.imageUrl.startsWith('data:image/svg+xml') ? local.imageUrl : undefined;
-              const sheetImg = pv.imageUrl && !pv.imageUrl.startsWith('data:image/svg+xml') ? pv.imageUrl : undefined;
-              return {
-                ...pv,
-                imageUrl: localImg || sheetImg || toDisplayableDriveImageUrl(undefined, driveUrl),
-                drivePhotoUrl: driveUrl,
-                driveFolderUrl: pv.driveFolderUrl || local?.driveFolderUrl,
+          // ป้องกันการล้างข้อมูลในเครื่องหากชีตยังไม่ถูกแชร์หรือยังไม่มีข้อมูลเริ่มต้น
+          if (totalPulledCount > 0 || driveLoaded) {
+            sheetsLoaded = true;
+
+            if (pulled.vehicles.length > 0) {
+              const cleanSheetVehicles = pulled.vehicles.filter(
+                (v) => v.id !== 'veh-01' && v.id !== 'veh-02' && v.id !== 'veh-03' && v.id !== 'veh-04'
+              );
+              const currentVehs = getStoredVehicles();
+              const localVehMap = new Map(currentVehs.map((v) => [v.id, v]));
+              const reconciledVehicles = cleanSheetVehicles.map((pv) => {
+                const local = localVehMap.get(pv.id);
+                const driveUrl = pv.drivePhotoUrl || local?.drivePhotoUrl;
+                const localImg = local?.imageUrl && !local.imageUrl.startsWith('data:image/svg+xml') ? local.imageUrl : undefined;
+                const sheetImg = pv.imageUrl && !pv.imageUrl.startsWith('data:image/svg+xml') ? pv.imageUrl : undefined;
+                return {
+                  ...pv,
+                  imageUrl: localImg || sheetImg || toDisplayableDriveImageUrl(undefined, driveUrl),
+                  drivePhotoUrl: driveUrl,
+                  driveFolderUrl: pv.driveFolderUrl || local?.driveFolderUrl,
+                };
+              });
+              setVehicles(reconciledVehicles);
+              saveVehicles(reconciledVehicles);
+            }
+
+            if (pulled.staffList.length > 0) {
+              const cleanSheetStaff = deduplicateStaff(pulled.staffList);
+              latestStaffList = cleanSheetStaff;
+              setStaffList(cleanSheetStaff);
+              saveStaff(cleanSheetStaff);
+              reconcileCurrentUserWithStaff(cleanSheetStaff);
+            }
+
+            let finalInspections = driveInspectionsSnapshot;
+            if (pulled.inspections.length > 0 || (driveLoaded && (activeToken || bridgeActive))) {
+              finalInspections = reconcileInspectionsList(pulled.inspections, driveInspectionsSnapshot);
+              setInspections(finalInspections);
+              replaceAllInspections(finalInspections);
+            }
+
+            if (pulled.damageRecords.length > 0 || (driveLoaded && (activeToken || bridgeActive))) {
+              const cleanSheetDamages = pulled.damageRecords.filter(
+                (d) => d.id !== 'dmg-01' && d.id !== 'dmg-02' && d.id !== 'dmg-03'
+              );
+              const currentDamages = getStoredDamageRecords();
+              const localMap = new Map(currentDamages.map((d) => [d.id, d]));
+              const reconciledDamages = cleanSheetDamages.map((pd) => {
+                const local = localMap.get(pd.id);
+                return {
+                  ...pd,
+                  photoUrl: local?.photoUrl && local.photoUrl.startsWith('data:') ? local.photoUrl : pd.photoUrl,
+                  additionalPhotos:
+                    local?.additionalPhotos && local.additionalPhotos.length > 0
+                      ? local.additionalPhotos
+                      : pd.additionalPhotos || [],
+                  drivePhotoUrl: pd.drivePhotoUrl || local?.drivePhotoUrl,
+                  driveFolderUrl: pd.driveFolderUrl || local?.driveFolderUrl,
+                };
+              });
+              setDamageRecords(reconciledDamages);
+              saveAllDamageRecords(reconciledDamages);
+            }
+
+            if (pulled.fuelLogs.length > 0 || (driveLoaded && (activeToken || bridgeActive))) {
+              const cleanSheetFuel = pulled.fuelLogs.filter(
+                (f) =>
+                  f.id !== 'fuel-01' &&
+                  f.id !== 'fuel-02' &&
+                  f.id !== 'fuel-03' &&
+                  f.id !== 'fuel-04' &&
+                  f.id !== 'fuel-05'
+              );
+              const currentFuel = getStoredFuelLogs();
+              const localMap = new Map(currentFuel.map((f) => [f.id, f]));
+              const reconciledFuel = cleanSheetFuel.map((pf) => {
+                const local = localMap.get(pf.id);
+                return {
+                  ...pf,
+                  receiptPhotoUrl: local?.receiptPhotoUrl || pf.receiptPhotoUrl || pf.receiptDriveUrl || '',
+                  receiptDriveUrl: pf.receiptDriveUrl || local?.receiptDriveUrl,
+                  driveFolderUrl: pf.driveFolderUrl || local?.driveFolderUrl,
+                };
+              });
+              setFuelLogs(reconciledFuel);
+              saveAllFuelLogs(reconciledFuel);
+            }
+
+            if (pulled.equipmentInspections.length > 0 || (driveLoaded && (activeToken || bridgeActive))) {
+              const currentEq = getStoredEquipmentInspections();
+              const localEqMap = new Map(currentEq.map((e) => [e.id, e]));
+              const reconciledEq = pulled.equipmentInspections.map((pe) => {
+                const local = localEqMap.get(pe.id);
+                return local && local.items && local.items.length > 0
+                  ? { ...pe, items: local.items, googleSheetsSyncStatus: 'synced' as const }
+                  : pe;
+              });
+              setEquipmentInspections(reconciledEq);
+              saveAllEquipmentInspections(reconciledEq);
+            }
+
+            if (pulled.equipmentRequisitions.length > 0 || (driveLoaded && (activeToken || bridgeActive))) {
+              const currentReq = getStoredEquipmentRequisitions();
+              const localReqMap = new Map(currentReq.map((r) => [r.id, r]));
+              const reconciledReq = pulled.equipmentRequisitions.map((pr) => {
+                const local = localReqMap.get(pr.id);
+                return local && local.items && local.items.length > 0 && (!pr.items || pr.items.length === 0)
+                  ? { ...pr, items: local.items, googleSheetsSyncStatus: 'synced' as const }
+                  : pr;
+              });
+              setEquipmentRequisitions(reconciledReq);
+              saveAllEquipmentRequisitions(reconciledReq);
+            }
+
+            const updatedConf = {
+              ...googleSheetsConfig,
+              spreadsheetId: resolvedSheetId,
+              spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${resolvedSheetId}/edit`,
+              lastSyncedAt: new Date().toLocaleTimeString('th-TH'),
+            };
+            setGoogleSheetsConfig(updatedConf);
+            saveGoogleSheetsConfig(updatedConf);
+
+            const latestVehs = getStoredVehicles();
+            const latestDmg = getStoredDamageRecords();
+            const latestFuel = getStoredFuelLogs();
+            const latestEq = getStoredEquipmentInspections();
+            const latestReq = getStoredEquipmentRequisitions();
+            driveStats = `(ตรวจสภาพ ${finalInspections.length} รายการ, อุปกรณ์ BLS ${latestEq.length} รายการ, เบิกอุปกรณ์ ${latestReq.length} ใบเบิก, รถ ${latestVehs.length} คัน, รอยตัวรถ ${latestDmg.length} จุด, น้ำมัน ${latestFuel.length} รายการ)`;
+
+            if (activeToken || bridgeActive) {
+              const snapshotPayload: MasterDatabasePayload = {
+                inspections: finalInspections,
+                vehicles: latestVehs,
+                staffList: getStoredStaff(),
+                damageRecords: latestDmg,
+                fuelLogs: latestFuel,
+                equipmentInspections: latestEq,
+                equipmentRequisitions: latestReq,
+                spreadsheetId: resolvedSheetId,
+                spreadsheetUrl: updatedConf.spreadsheetUrl,
+                lastSyncedAt: new Date().toLocaleString('th-TH'),
+                version: 1,
               };
-            });
-            setVehicles(reconciledVehicles);
-            saveVehicles(reconciledVehicles);
+              saveMasterDatabaseToDrive(activeToken, snapshotPayload).catch(console.warn);
+            }
           }
-
-          // Reconcile Staff: Google Sheets is the Single Source of Truth
-          if (pulled.staffList) {
-            const cleanSheetStaff = deduplicateStaff(pulled.staffList);
-            latestStaffList = cleanSheetStaff;
-            setStaffList(cleanSheetStaff);
-            saveStaff(cleanSheetStaff);
-            reconcileCurrentUserWithStaff(cleanSheetStaff);
-          }
-
-          // Reconcile Inspections: Google Sheets is the Single Source of Truth, enriched by Drive media/checklist
-          let finalInspections = driveInspectionsSnapshot;
-          if (pulled.inspections) {
-            finalInspections = reconcileInspectionsList(pulled.inspections, driveInspectionsSnapshot);
-            setInspections(finalInspections);
-            replaceAllInspections(finalInspections);
-          }
-
-          // Reconcile Damage Records: Google Sheets is the Single Source of Truth!
-          if (pulled.damageRecords) {
-            const cleanSheetDamages = pulled.damageRecords.filter(
-              (d) => d.id !== 'dmg-01' && d.id !== 'dmg-02' && d.id !== 'dmg-03'
-            );
-            const currentDamages = getStoredDamageRecords();
-            const localMap = new Map(currentDamages.map((d) => [d.id, d]));
-            const reconciledDamages = cleanSheetDamages.map((pd) => {
-              const local = localMap.get(pd.id);
-              return {
-                ...pd,
-                photoUrl: (local?.photoUrl && local.photoUrl.startsWith('data:')) ? local.photoUrl : pd.photoUrl,
-                additionalPhotos: (local?.additionalPhotos && local.additionalPhotos.length > 0) ? local.additionalPhotos : (pd.additionalPhotos || []),
-                drivePhotoUrl: pd.drivePhotoUrl || local?.drivePhotoUrl,
-                driveFolderUrl: pd.driveFolderUrl || local?.driveFolderUrl,
-              };
-            });
-            setDamageRecords(reconciledDamages);
-            saveAllDamageRecords(reconciledDamages);
-          }
-
-          // Reconcile Fuel Logs: Google Sheets is the Single Source of Truth!
-          if (pulled.fuelLogs) {
-            const cleanSheetFuel = pulled.fuelLogs.filter(
-              (f) =>
-                f.id !== 'fuel-01' &&
-                f.id !== 'fuel-02' &&
-                f.id !== 'fuel-03' &&
-                f.id !== 'fuel-04' &&
-                f.id !== 'fuel-05'
-            );
-            const currentFuel = getStoredFuelLogs();
-            const localMap = new Map(currentFuel.map((f) => [f.id, f]));
-            const reconciledFuel = cleanSheetFuel.map((pf) => {
-              const local = localMap.get(pf.id);
-              return {
-                ...pf,
-                receiptPhotoUrl: local?.receiptPhotoUrl || pf.receiptPhotoUrl || pf.receiptDriveUrl || '',
-                receiptDriveUrl: pf.receiptDriveUrl || local?.receiptDriveUrl,
-                driveFolderUrl: pf.driveFolderUrl || local?.driveFolderUrl,
-              };
-            });
-            setFuelLogs(reconciledFuel);
-            saveAllFuelLogs(reconciledFuel);
-          }
-
-          // Reconcile Equipment Inspections
-          if (pulled.equipmentInspections) {
-            const currentEq = getStoredEquipmentInspections();
-            const localEqMap = new Map(currentEq.map((e) => [e.id, e]));
-            const reconciledEq = pulled.equipmentInspections.map((pe) => {
-              const local = localEqMap.get(pe.id);
-              return local && local.items && local.items.length > 0
-                ? { ...pe, items: local.items, googleSheetsSyncStatus: 'synced' as const }
-                : pe;
-            });
-            setEquipmentInspections(reconciledEq);
-            saveAllEquipmentInspections(reconciledEq);
-          }
-
-          // Reconcile Equipment Requisitions
-          if (pulled.equipmentRequisitions) {
-            const currentReq = getStoredEquipmentRequisitions();
-            const localReqMap = new Map(currentReq.map((r) => [r.id, r]));
-            const reconciledReq = pulled.equipmentRequisitions.map((pr) => {
-              const local = localReqMap.get(pr.id);
-              return local && local.items && local.items.length > 0 && (!pr.items || pr.items.length === 0)
-                ? { ...pr, items: local.items, googleSheetsSyncStatus: 'synced' as const }
-                : pr;
-            });
-            setEquipmentRequisitions(reconciledReq);
-            saveAllEquipmentRequisitions(reconciledReq);
-          }
-
-          // อัปเดตสถานะ Google Sheets Config
-          const updatedConf = {
-            ...googleSheetsConfig,
-            spreadsheetId: resolvedSheetId,
-            spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${resolvedSheetId}/edit`,
-            lastSyncedAt: new Date().toLocaleTimeString('th-TH'),
-          };
-          setGoogleSheetsConfig(updatedConf);
-          saveGoogleSheetsConfig(updatedConf);
-
-          const latestVehs = getStoredVehicles();
-          const latestDmg = getStoredDamageRecords();
-          const latestFuel = getStoredFuelLogs();
-          const latestEq = getStoredEquipmentInspections();
-          const latestReq = getStoredEquipmentRequisitions();
-          driveStats = `(ตรวจสภาพ ${finalInspections.length} รายการ, อุปกรณ์ BLS ${latestEq.length} รายการ, เบิกอุปกรณ์ ${latestReq.length} ใบเบิก, รถ ${latestVehs.length} คัน, รอยตัวรถ ${latestDmg.length} จุด, น้ำมัน ${latestFuel.length} รายการ)`;
-
-          // ซิงค์บันทึก Snapshot คืนสู่ Google Drive เพื่อให้ตรงกับ Google Sheets 100%
-          const snapshotPayload: MasterDatabasePayload = {
-            inspections: finalInspections,
-            vehicles: latestVehs,
-            staffList: getStoredStaff(),
-            damageRecords: latestDmg,
-            fuelLogs: latestFuel,
-            equipmentInspections: latestEq,
-            equipmentRequisitions: latestReq,
-            spreadsheetId: resolvedSheetId,
-            spreadsheetUrl: updatedConf.spreadsheetUrl,
-            lastSyncedAt: new Date().toLocaleString('th-TH'),
-            version: 1,
-          };
-          saveMasterDatabaseToDrive(token, snapshotPayload).catch(console.warn);
         } catch (sheetErr) {
           console.warn('Phase 2 (Google Sheets Load) warning:', sheetErr);
         }
       }
 
       if (showNotification) {
-        setToastNotification({
-          type: 'success',
-          title: 'ดึงข้อมูลคืน (Sync Back) สำเร็จ',
-          message: `ดึงข้อมูลล่าสุดจาก Google Drive & Google Sheets ตรงกัน 100% เรียบร้อย ${driveStats}`,
-        });
+        if (sheetsLoaded || driveLoaded) {
+          setToastNotification({
+            type: 'success',
+            title: 'ดึงข้อมูลคืน (Sync Back) สำเร็จ',
+            message: `ดึงข้อมูลล่าสุดจาก Google Drive & Google Sheets เรียบร้อย ${driveStats}`,
+          });
+        } else if (bridgeActive || activeToken) {
+          setToastNotification({
+            type: 'info',
+            title: 'เชื่อมต่อ Google Sheets พร้อมใช้งานแล้ว',
+            message: 'สเปรดชีตปลายทางยังไม่มีข้อมูล สามารถกด "ซิงค์ข้อมูลขึ้นชีต" ในเมนู Sheets เพื่อส่งข้อมูลเริ่มต้นได้ทันที',
+          });
+        } else {
+          setToastNotification({
+            type: 'info',
+            title: 'ใช้งานโหมดออฟไลน์ในเครื่อง',
+            message: 'เชื่อมสเปรดชีตและโฟลเดอร์ Drive ไว้แล้ว หากต้องการซิงค์ 2 ทางโดยไม่ต้องล็อกอิน Google กรุณาตั้งค่า Apps Script URL หรือแชร์ชีตแบบทุกคนที่มีลิงก์ดูได้',
+          });
+        }
       }
       return { token, spreadsheetId: resolvedSheetId || null, staffList: latestStaffList };
     } catch (err: any) {
@@ -865,13 +874,11 @@ export default function App() {
       setStaffList(updatedStaff);
       saveStaff(updatedStaff);
 
-      const token = syncRes?.token || (await getAccessToken());
-      const spreadsheetId = syncRes?.spreadsheetId || googleSheetsConfig.spreadsheetId;
-      if (token) {
+      const token = syncRes?.token || (await getAccessToken()) || '';
+      const spreadsheetId = syncRes?.spreadsheetId || googleSheetsConfig.spreadsheetId || getActiveSpreadsheetId();
+      if ((token || hasNoLoginBridge()) && spreadsheetId) {
         try {
-          if (spreadsheetId) {
-            await syncStaffToSheet(spreadsheetId, updatedStaff, token);
-          }
+          await syncStaffToSheet(spreadsheetId, updatedStaff, token);
           await saveCurrentDatabaseSnapshotToDrive(token);
         } catch (err) {
           console.warn('Auto-register user to Cloud warning:', err);
@@ -990,25 +997,14 @@ export default function App() {
     }
   };
 
-  // Helper to ensure valid access token and spreadsheet across devices
+  // Helper to resolve spreadsheet and optional auth token without forcing Google Sign-In
   const ensureTokenAndSheet = async (
-    autoPrompt = false
-  ): Promise<{ token: string | null; spreadsheetId: string | null; redirected?: boolean }> => {
-    let token = await getAccessToken();
-    if (!token && autoPrompt) {
-      try {
-        const signRes = await googleSignIn({ intent: { type: 'sync' } });
-        if (signRes?.redirected) {
-          return { token: null, spreadsheetId: googleSheetsConfig.spreadsheetId || null, redirected: true };
-        }
-        if (signRes?.accessToken && signRes.user) {
-          token = signRes.accessToken;
-          setGoogleUser(signRes.user);
-        }
-      } catch (_) {}
-    }
+    _autoPrompt = false
+  ): Promise<{ token: string | null; spreadsheetId: string | null; bridgeActive: boolean; redirected?: boolean }> => {
+    const token = await getAccessToken();
+    const bridgeActive = hasNoLoginBridge();
+    let spreadsheetId = googleSheetsConfig.spreadsheetId || getActiveSpreadsheetId();
 
-    let spreadsheetId = googleSheetsConfig.spreadsheetId;
     if (!spreadsheetId && token) {
       try {
         const found = await findExistingInspectionSpreadsheet(token);
@@ -1028,14 +1024,14 @@ export default function App() {
       }
     }
 
-    return { token, spreadsheetId: spreadsheetId || null };
+    return { token, spreadsheetId: spreadsheetId || null, bridgeActive };
   };
 
   // Submit Inspection Record
   const handleSubmitInspection = async (record: InspectionRecord) => {
     setIsSubmittingInspection(true);
     try {
-      // 1. Save locally first so data is never lost even if Google redirect happens
+      // 1. Save locally first so data is never lost
       let recordToSave = { ...record };
       const initialSaved = saveInspectionRecord(recordToSave);
       setInspections(initialSaved);
@@ -1044,25 +1040,16 @@ export default function App() {
 
       const isAdmin = currentUser?.role === 'admin';
 
-      // 2. Ensure Google Auth & Spreadsheet (Prompt only for Admin; silent background sync for Staff if token active)
-      const { token, spreadsheetId, redirected } = await ensureTokenAndSheet(isAdmin);
-      if (redirected) {
-        return;
-      }
+      // 2. Check optional Google token or login-free Apps Script Bridge
+      const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+      const activeToken = token || '';
+      const canWriteCloud = Boolean((activeToken || bridgeActive) && spreadsheetId);
 
       let apiActivationUrl: string | undefined;
-      if (!token) {
-        if (isAdmin) {
-          syncErrors.push('ยังไม่ได้ลงชื่อเข้าใช้ Google จึงไม่สามารถอัปโหลดรูปภาพลง Google Drive และบันทึกลง Google Sheets ได้');
-        }
-      } else if (!spreadsheetId) {
-        if (isAdmin) {
-          syncErrors.push('ยังไม่มี Google Spreadsheet รองรับ (กรุณากดเปิดเมนู Google Sheets เพื่อสร้างหรือเชื่อมต่อ)');
-        }
-      } else {
+      if (canWriteCloud && spreadsheetId) {
         // Upload 4-side photos and attached document to Google Drive
         try {
-          const driveLinks = await uploadInspectionMediaToDrive(token, record);
+          const driveLinks = await uploadInspectionMediaToDrive(activeToken, record);
           recordToSave.driveLinks = driveLinks;
         } catch (driveErr: any) {
           const formatted = formatGoogleApiError(driveErr?.message || 'อัปโหลดภาพไม่สำเร็จ', 'Google Drive API');
@@ -1076,7 +1063,7 @@ export default function App() {
             { ...recordToSave, googleSheetsSyncStatus: 'synced' as const },
             ...getStoredInspections().filter((r) => r.id !== recordToSave.id),
           ];
-          await syncInspectionsToSheet(spreadsheetId, mirroredList, token);
+          await syncInspectionsToSheet(spreadsheetId, mirroredList, activeToken);
           recordToSave.googleSheetsSyncStatus = 'synced';
         } catch (sheetErr: any) {
           const formatted = formatGoogleApiError(sheetErr?.message || 'บันทึกแถวไม่สำเร็จ', 'Google Sheets API');
@@ -1091,11 +1078,11 @@ export default function App() {
       setVehicles(latestVehicles);
 
       // Automated background mirror of updated vehicle fleet & audit trail to Google Sheets & Drive
-      if (token && spreadsheetId) {
-        syncVehiclesToSheet(spreadsheetId, latestVehicles, token).catch((err) => {
+      if (canWriteCloud && spreadsheetId) {
+        syncVehiclesToSheet(spreadsheetId, latestVehicles, activeToken).catch((err) => {
           console.warn('Vehicle fleet sync warning:', err);
         });
-        saveCurrentDatabaseSnapshotToDrive(token);
+        saveCurrentDatabaseSnapshotToDrive(activeToken);
       }
 
       logSystemActivityAndSyncSheets(
@@ -1119,13 +1106,21 @@ export default function App() {
           linkUrl: apiActivationUrl || googleSheetsConfig.spreadsheetUrl,
           linkText: apiActivationUrl ? 'เปิดหน้าเปิดใช้งาน API ใน Google Cloud' : 'ตรวจสอบการเชื่อมต่อ',
         });
-      } else {
+      } else if (canWriteCloud) {
         setToastNotification({
           type: 'success',
           title: 'บันทึกการตรวจสภาพรถสำเร็จและซิงค์ครบถ้วน!',
           message: `บันทึกข้อมูลรถ ${record.vehicleCode} (${record.plateNumber}) พร้อมอัปโหลดภาพลง Google Drive และบันทึกข้อมูลลง Google Sheets เรียบร้อยแล้ว`,
           linkUrl: recordToSave.driveLinks?.folderUrl || googleSheetsConfig.spreadsheetUrl,
           linkText: recordToSave.driveLinks?.folderUrl ? 'เปิดดูรูปใน Google Drive' : 'เปิดดูใน Google Sheets',
+        });
+      } else {
+        setToastNotification({
+          type: 'success',
+          title: 'บันทึกการตรวจสภาพรถสำเร็จ!',
+          message: `บันทึกข้อมูลรถ ${record.vehicleCode} (${record.plateNumber}) ในเครื่องแล้ว (สามารถตั้งค่า Apps Script URL ในเมนู Sheets เพื่อซิงค์อัตโนมัติโดยไม่ต้องล็อกอิน Google)`,
+          linkUrl: googleSheetsConfig.spreadsheetUrl,
+          linkText: 'เปิดดู Google Sheets',
         });
       }
 
@@ -1147,33 +1142,27 @@ export default function App() {
   const handleSyncSingleRecord = async (record: InspectionRecord) => {
     setIsSyncingGSheets(true);
     try {
-      let token = await getAccessToken();
-      if (!token) {
-        const res = await googleSignIn({ intent: { type: 'sync' } });
-        if (res?.redirected) {
-          return;
-        }
-        if (res?.accessToken && res.user) {
-          token = res.accessToken;
-          setGoogleUser(res.user);
-        }
-      }
+      const token = await getAccessToken();
+      const bridgeActive = hasNoLoginBridge();
+      const activeToken = token || '';
 
-      if (!token) throw new Error('ไม่พบ Access Token กรุณาลงชื่อเข้าใช้ Google');
+      if (!activeToken && !bridgeActive) {
+        throw new Error('กรุณาตั้งค่า Apps Script Web App URL ในเมนู Google Sheets เพื่อซิงค์โดยไม่ต้องล็อกอิน Google (หรือกดลงชื่อเข้าใช้ Google)');
+      }
 
       let updatedRecord = { ...record };
 
       // Upload media to Google Drive if not uploaded yet
       if (!updatedRecord.driveLinks?.folderUrl) {
         try {
-          const driveLinks = await uploadInspectionMediaToDrive(token, updatedRecord);
+          const driveLinks = await uploadInspectionMediaToDrive(activeToken, updatedRecord);
           updatedRecord.driveLinks = driveLinks;
         } catch (dErr) {
           console.warn('Drive upload error:', dErr);
         }
       }
 
-      const sheetId = googleSheetsConfig.spreadsheetId;
+      const sheetId = googleSheetsConfig.spreadsheetId || getActiveSpreadsheetId();
       updatedRecord.googleSheetsSyncStatus = sheetId ? 'synced' : updatedRecord.googleSheetsSyncStatus;
       updateInspectionRecord(updatedRecord);
       const latestInspections = getStoredInspections();
@@ -1181,9 +1170,9 @@ export default function App() {
       setSelectedRecordDetail(updatedRecord);
 
       if (sheetId) {
-        await syncInspectionsToSheet(sheetId, latestInspections, token);
+        await syncInspectionsToSheet(sheetId, latestInspections, activeToken);
       }
-      await saveCurrentDatabaseSnapshotToDrive(token);
+      await saveCurrentDatabaseSnapshotToDrive(activeToken);
 
       setToastNotification({
         type: 'success',
@@ -1220,13 +1209,13 @@ export default function App() {
       setSelectedRecordDetail(null);
     }
 
-    const { token, spreadsheetId } = await ensureTokenAndSheet(false);
-    if (token) {
+    const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+    if (token || bridgeActive) {
       try {
         if (spreadsheetId) {
-          await syncInspectionsToSheet(spreadsheetId, updated, token);
+          await syncInspectionsToSheet(spreadsheetId, updated, token || '');
         }
-        await saveCurrentDatabaseSnapshotToDrive(token);
+        await saveCurrentDatabaseSnapshotToDrive(token || '');
       } catch (err: any) {
         console.warn('Delete inspection cloud sync warning:', err?.message || err);
         const formatted = formatGoogleApiError(err?.message || 'ไม่สามารถอัปเดต Google Sheets ได้', 'Google Sheets API');
@@ -1270,12 +1259,12 @@ export default function App() {
     setInspections(emptyList);
     setSelectedRecordDetail(null);
 
-    const { token, spreadsheetId } = await ensureTokenAndSheet(false);
-    if (token) {
+    const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+    if (token || bridgeActive) {
       if (spreadsheetId) {
-        await syncInspectionsToSheet(spreadsheetId, [], token).catch(console.warn);
+        await syncInspectionsToSheet(spreadsheetId, [], token || '').catch(console.warn);
       }
-      await saveCurrentDatabaseSnapshotToDrive(token);
+      await saveCurrentDatabaseSnapshotToDrive(token || '');
     }
 
     logSystemActivityAndSyncSheets(
@@ -1325,15 +1314,15 @@ export default function App() {
     setSelectedRecordDetail(null);
     setRecordToPrint(null);
 
-    const { token, spreadsheetId } = await ensureTokenAndSheet(false);
-    if (token) {
+    const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+    if (token || bridgeActive) {
       if (spreadsheetId) {
-        await syncInspectionsToSheet(spreadsheetId, [], token).catch(console.warn);
+        await syncInspectionsToSheet(spreadsheetId, [], token || '').catch(console.warn);
         if (clearFleetAndStaff) {
-          await syncVehiclesToSheet(spreadsheetId, [], token).catch(console.warn);
+          await syncVehiclesToSheet(spreadsheetId, [], token || '').catch(console.warn);
         }
       }
-      await saveCurrentDatabaseSnapshotToDrive(token);
+      await saveCurrentDatabaseSnapshotToDrive(token || '');
     }
 
     logSystemActivityAndSyncSheets(
@@ -1372,14 +1361,13 @@ export default function App() {
     setVehicles(initialVehList);
     saveVehicles(initialVehList);
 
-    // 1. Ensure Google Auth & Spreadsheet
-    const { token, spreadsheetId, redirected } = await ensureTokenAndSheet(true);
-    if (redirected) return;
+    // 1. Check optional Google token or login-free Apps Script Bridge
+    const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+    const activeToken = token || '';
+    const canWriteCloud = Boolean((activeToken || bridgeActive) && spreadsheetId);
 
     let apiActivationUrl: string | undefined;
-    if (!token) {
-      syncErrors.push('ยังไม่ได้ลงชื่อเข้าใช้ Google (กรุณาเชื่อมต่อบัญชี Google เพื่ออัปโหลดลง Drive และ Sheets)');
-    } else {
+    if (canWriteCloud) {
       // 2. Upload real vehicle photo to Google Drive if it's a newly picked/captured data URL
       if (
         vehicleToSave.imageUrl &&
@@ -1387,7 +1375,7 @@ export default function App() {
         !vehicleToSave.imageUrl.startsWith('data:image/svg+xml')
       ) {
         try {
-          const driveRes = await uploadVehiclePhotoToDrive(token, vehicleToSave);
+          const driveRes = await uploadVehiclePhotoToDrive(activeToken, vehicleToSave);
           vehicleToSave.drivePhotoUrl = driveRes.drivePhotoUrl || vehicleToSave.drivePhotoUrl;
           vehicleToSave.driveFolderUrl = driveRes.driveFolderUrl || vehicleToSave.driveFolderUrl;
           driveSucceeded = Boolean(driveRes.drivePhotoUrl);
@@ -1411,20 +1399,16 @@ export default function App() {
     saveVehicles(list);
 
     // 3. Auto-sync fleet mirror to Google Sheets & Google Drive Master DB
-    if (token) {
-      if (spreadsheetId) {
-        try {
-          await syncVehiclesToSheet(spreadsheetId, list, token);
-        } catch (sheetErr: any) {
-          console.warn('Google Sheets vehicle sync warning:', sheetErr?.message || sheetErr);
-          const formatted = formatGoogleApiError(sheetErr?.message || 'บันทึกรายการรถลงตารางไม่สำเร็จ', 'Google Sheets API');
-          apiActivationUrl = apiActivationUrl || formatted.activationUrl;
-          syncErrors.push(`Google Sheets: ${formatted.message}`);
-        }
-      } else {
-        syncErrors.push('ยังไม่มี Google Spreadsheet รองรับ (กรุณากดเปิดเมนู Google Sheets เพื่อสร้างหรือเชื่อมต่อ)');
+    if (canWriteCloud && spreadsheetId) {
+      try {
+        await syncVehiclesToSheet(spreadsheetId, list, activeToken);
+      } catch (sheetErr: any) {
+        console.warn('Google Sheets vehicle sync warning:', sheetErr?.message || sheetErr);
+        const formatted = formatGoogleApiError(sheetErr?.message || 'บันทึกรายการรถลงตารางไม่สำเร็จ', 'Google Sheets API');
+        apiActivationUrl = apiActivationUrl || formatted.activationUrl;
+        syncErrors.push(`Google Sheets: ${formatted.message}`);
       }
-      await saveCurrentDatabaseSnapshotToDrive(token);
+      await saveCurrentDatabaseSnapshotToDrive(activeToken);
     }
 
     logSystemActivityAndSyncSheets(
@@ -1442,7 +1426,7 @@ export default function App() {
         linkUrl: apiActivationUrl || googleSheetsConfig.spreadsheetUrl,
         linkText: apiActivationUrl ? 'เปิดหน้าเปิดใช้งาน API ใน Google Cloud' : 'ตรวจสอบการเชื่อมต่อ Google',
       });
-    } else {
+    } else if (canWriteCloud) {
       setToastNotification({
         type: 'success',
         title: 'บันทึกข้อมูลรถและอัปโหลด Cloud สำเร็จ!',
@@ -1451,6 +1435,12 @@ export default function App() {
         linkText: vehicleToSave.driveFolderUrl || vehicleToSave.drivePhotoUrl
           ? 'เปิดดูรูปใน Google Drive'
           : 'เปิดดูใน Google Sheets',
+      });
+    } else {
+      setToastNotification({
+        type: 'success',
+        title: 'บันทึกข้อมูลรถในเครื่องสำเร็จ!',
+        message: `บันทึกข้อมูลรถกู้ชีพ ${vehicleToSave.code} (${vehicleToSave.plateNumber}) เรียบร้อยแล้ว`,
       });
     }
   };
@@ -1461,13 +1451,13 @@ export default function App() {
     setVehicles(filtered);
     saveVehicles(filtered);
 
-    const { token, spreadsheetId } = await ensureTokenAndSheet(false);
-    if (token) {
+    const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+    if (token || bridgeActive) {
       try {
         if (spreadsheetId) {
-          await syncVehiclesToSheet(spreadsheetId, filtered, token);
+          await syncVehiclesToSheet(spreadsheetId, filtered, token || '');
         }
-        await saveCurrentDatabaseSnapshotToDrive(token);
+        await saveCurrentDatabaseSnapshotToDrive(token || '');
       } catch (err: any) {
         console.warn('Delete vehicle cloud sync warning:', err?.message || err);
         const formatted = formatGoogleApiError(err?.message || 'ไม่สามารถลบข้อมูลรถจาก Google Sheets ได้', 'Google Sheets API');
@@ -1492,7 +1482,7 @@ export default function App() {
     setToastNotification({
       type: 'info',
       title: 'ลบข้อมูลรถแล้ว',
-      message: 'ลบรายการรถกู้ชีพออกจากระบบและอัปเดตลง Google Sheets & Drive เรียบร้อยแล้ว',
+      message: 'ลบรายการรถกู้ชีพออกจากระบบเรียบร้อยแล้ว',
     });
   };
 
@@ -1502,13 +1492,13 @@ export default function App() {
     setVehicles(list);
     saveVehicles(list);
 
-    const { token, spreadsheetId } = await ensureTokenAndSheet(false);
-    if (token) {
+    const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+    if (token || bridgeActive) {
       try {
         if (spreadsheetId) {
-          await syncVehiclesToSheet(spreadsheetId, list, token);
+          await syncVehiclesToSheet(spreadsheetId, list, token || '');
         }
-        await saveCurrentDatabaseSnapshotToDrive(token);
+        await saveCurrentDatabaseSnapshotToDrive(token || '');
       } catch (err: any) {
         console.warn('Update vehicle status cloud sync warning:', err?.message || err);
         const formatted = formatGoogleApiError(err?.message || 'ไม่สามารถอัปเดต Google Sheets ได้', 'Google Sheets API');
@@ -1550,21 +1540,17 @@ export default function App() {
     }
 
     const syncErrors: string[] = [];
-    const { token, spreadsheetId, redirected } = await ensureTokenAndSheet(true);
-    if (redirected) return;
-    if (!token) {
-      syncErrors.push('ยังไม่ได้เชื่อมต่อบัญชี Google');
-    } else {
-      if (spreadsheetId) {
-        try {
-          await syncStaffToSheet(spreadsheetId, cleanList, token);
-        } catch (err: any) {
-          syncErrors.push(`Google Sheets: ${err.message || 'ซิงค์ไม่สำเร็จ'}`);
-        }
-      } else {
-        syncErrors.push('ยังไม่มี Google Spreadsheet รองรับ');
+    const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+    const activeToken = token || '';
+    const canWriteCloud = Boolean((activeToken || bridgeActive) && spreadsheetId);
+
+    if (canWriteCloud && spreadsheetId) {
+      try {
+        await syncStaffToSheet(spreadsheetId, cleanList, activeToken);
+      } catch (err: any) {
+        syncErrors.push(`Google Sheets: ${err.message || 'ซิงค์ไม่สำเร็จ'}`);
       }
-      await saveCurrentDatabaseSnapshotToDrive(token);
+      await saveCurrentDatabaseSnapshotToDrive(activeToken);
     }
 
     logSystemActivityAndSyncSheets(
@@ -1584,7 +1570,9 @@ export default function App() {
       setToastNotification({
         type: 'success',
         title: 'บันทึกข้อมูลพนักงานสำเร็จ',
-        message: `บันทึกข้อมูล ${staff.name} (${staff.employeeId}) และซิงค์ลง Google Sheets & Google Drive เรียบร้อยแล้ว`,
+        message: canWriteCloud
+          ? `บันทึกข้อมูล ${staff.name} (${staff.employeeId}) และซิงค์ลง Google Sheets & Google Drive เรียบร้อยแล้ว`
+          : `บันทึกข้อมูล ${staff.name} (${staff.employeeId}) เรียบร้อยแล้ว`,
       });
     }
   };
@@ -1595,13 +1583,13 @@ export default function App() {
     setStaffList(filtered);
     saveStaff(filtered);
 
-    const { token, spreadsheetId } = await ensureTokenAndSheet(false);
-    if (token) {
+    const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+    if (token || bridgeActive) {
       try {
         if (spreadsheetId) {
-          await syncStaffToSheet(spreadsheetId, filtered, token);
+          await syncStaffToSheet(spreadsheetId, filtered, token || '');
         }
-        await saveCurrentDatabaseSnapshotToDrive(token);
+        await saveCurrentDatabaseSnapshotToDrive(token || '');
       } catch (err: any) {
         console.warn('Delete staff cloud sync warning:', err?.message || err);
         const formatted = formatGoogleApiError(err?.message || 'ไม่สามารถอัปเดต Google Sheets ได้', 'Google Sheets API');
@@ -1626,7 +1614,7 @@ export default function App() {
     setToastNotification({
       type: 'info',
       title: 'ลบข้อมูลพนักงานแล้ว',
-      message: 'ลบรายชื่อพนักงานออกจากระบบและอัปเดต Google Sheets & Google Drive เรียบร้อยแล้ว',
+      message: 'ลบรายชื่อพนักงานออกจากระบบเรียบร้อยแล้ว',
     });
   };
 
@@ -1636,13 +1624,13 @@ export default function App() {
     setStaffList(list);
     saveStaff(list);
 
-    const { token, spreadsheetId } = await ensureTokenAndSheet(false);
-    if (token) {
+    const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+    if (token || bridgeActive) {
       try {
         if (spreadsheetId) {
-          await syncStaffToSheet(spreadsheetId, list, token);
+          await syncStaffToSheet(spreadsheetId, list, token || '');
         }
-        await saveCurrentDatabaseSnapshotToDrive(token);
+        await saveCurrentDatabaseSnapshotToDrive(token || '');
       } catch (err: any) {
         console.warn('Update staff status cloud sync warning:', err?.message || err);
       }
@@ -1671,27 +1659,20 @@ export default function App() {
 
     const isAdmin = currentUser?.role === 'admin';
 
-    // 1. Ensure Google Auth & Spreadsheet (Prompt only for Admin)
-    const { token, spreadsheetId, redirected } = await ensureTokenAndSheet(isAdmin);
-    if (redirected) return;
+    // 1. Check optional Google token or login-free Apps Script Bridge
+    const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+    const activeToken = token || '';
+    const canWriteCloud = Boolean((activeToken || bridgeActive) && spreadsheetId);
 
     let apiActivationUrl: string | undefined;
-    if (!token) {
-      if (isAdmin) {
-        syncErrors.push('ยังไม่ได้ลงชื่อเข้าใช้ Google (กรุณากดเปิดเมนู Google Sheets เพื่อเชื่อมต่อบัญชี Google)');
-      }
-    } else if (!spreadsheetId) {
-      if (isAdmin) {
-        syncErrors.push('ยังไม่มี Google Spreadsheet รองรับ (กรุณากดเปิดเมนู Google Sheets เพื่อสร้างหรือเชื่อมต่อ)');
-      }
-    } else {
+    if (canWriteCloud) {
       // Upload damage photos to Google Drive
       try {
         if (
           itemToSave.photoUrl.startsWith('data:image/') ||
           (itemToSave.additionalPhotos && itemToSave.additionalPhotos.some((p) => p.startsWith('data:image/')))
         ) {
-          const driveRes = await uploadDamagePhotosToDrive(token, itemToSave);
+          const driveRes = await uploadDamagePhotosToDrive(activeToken, itemToSave);
           itemToSave.drivePhotoUrl = driveRes.drivePhotoUrl || itemToSave.drivePhotoUrl;
           itemToSave.driveAdditionalPhotoUrls = driveRes.driveAdditionalPhotoUrls || itemToSave.driveAdditionalPhotoUrls;
           itemToSave.driveFolderUrl = driveRes.driveFolderUrl || itemToSave.driveFolderUrl;
@@ -1711,10 +1692,10 @@ export default function App() {
     setDamageRecords(updated);
 
     // Auto-sync entire damage records table to Google Sheets & Google Drive Master DB
-    if (token && spreadsheetId) {
+    if (canWriteCloud && spreadsheetId) {
       try {
-        await syncDamageToSheet(spreadsheetId, updated, token);
-        await saveCurrentDatabaseSnapshotToDrive(token);
+        await syncDamageToSheet(spreadsheetId, updated, activeToken);
+        await saveCurrentDatabaseSnapshotToDrive(activeToken);
         syncSucceeded = true;
         itemToSave.googleSheetsSyncStatus = 'synced';
       } catch (sheetErr: any) {
@@ -1747,7 +1728,7 @@ export default function App() {
         linkUrl: apiActivationUrl || googleSheetsConfig.spreadsheetUrl,
         linkText: apiActivationUrl ? 'เปิดหน้าเปิดใช้งาน API ใน Google Cloud' : 'ตรวจสอบการเชื่อมต่อ Google',
       });
-    } else {
+    } else if (canWriteCloud) {
       setToastNotification({
         type: 'success',
         title: isEditing ? 'แก้ไขข้อมูลรอยตัวรถสำเร็จและซิงค์ครบถ้วน!' : 'บันทึกรอยตัวรถสำเร็จและซิงค์ครบถ้วน!',
@@ -1756,6 +1737,12 @@ export default function App() {
         linkText: itemToSave.driveFolderUrl || itemToSave.drivePhotoUrl
           ? 'เปิดดูรูปใน Google Drive'
           : 'เปิดดูใน Google Sheets',
+      });
+    } else {
+      setToastNotification({
+        type: 'success',
+        title: isEditing ? 'แก้ไขข้อมูลรอยตัวรถสำเร็จ!' : 'บันทึกรอยตัวรถสำเร็จ!',
+        message: `${isEditing ? 'แก้ไขข้อมูลรอย' : 'บันทึกรอย'} "${item.positionArea}" ของรถ ${item.vehicleCode} (${totalPhotos} รูป) เรียบร้อยแล้ว`,
       });
     }
   };
@@ -1766,11 +1753,11 @@ export default function App() {
     const updated = deleteDamageRecord(id);
     setDamageRecords(updated);
 
-    const { token, spreadsheetId } = await ensureTokenAndSheet(false);
-    if (token && spreadsheetId) {
+    const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+    if ((token || bridgeActive) && spreadsheetId) {
       try {
-        await syncDamageToSheet(spreadsheetId, updated, token);
-        await saveCurrentDatabaseSnapshotToDrive(token);
+        await syncDamageToSheet(spreadsheetId, updated, token || '');
+        await saveCurrentDatabaseSnapshotToDrive(token || '');
       } catch (err: any) {
         console.warn('Delete damage sheet sync warning:', err?.message || err);
         if (isAdmin) {
@@ -1796,7 +1783,7 @@ export default function App() {
     setToastNotification({
       type: 'info',
       title: 'ลบข้อมูลรอยตัวรถแล้ว',
-      message: isAdmin
+      message: isAdmin && (token || bridgeActive)
         ? 'ลบประวัติรอยตัวรถออกจากระบบและอัปเดตลง Google Sheets และ Google Drive เรียบร้อยแล้ว'
         : 'ลบประวัติรอยตัวรถออกจากระบบเรียบร้อยแล้ว',
     });
@@ -1811,11 +1798,11 @@ export default function App() {
     const updated = saveDamageRecord(updatedItem);
     setDamageRecords(updated);
 
-    const { token, spreadsheetId } = await ensureTokenAndSheet(false);
-    if (token && spreadsheetId) {
+    const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+    if ((token || bridgeActive) && spreadsheetId) {
       try {
-        await syncDamageToSheet(spreadsheetId, updated, token);
-        await saveCurrentDatabaseSnapshotToDrive(token);
+        await syncDamageToSheet(spreadsheetId, updated, token || '');
+        await saveCurrentDatabaseSnapshotToDrive(token || '');
       } catch (err: any) {
         console.warn('Update damage status sheet sync warning:', err?.message || err);
         if (isAdmin) {
@@ -1842,7 +1829,7 @@ export default function App() {
     setToastNotification({
       type: 'success',
       title: 'อัปเดตสถานะรอยตัวรถแล้ว',
-      message: isAdmin
+      message: isAdmin && (token || bridgeActive)
         ? `เปลี่ยนสถานะเป็น "${resolved ? 'ซ่อมแล้ว' : 'รอซ่อม'}" และอัปเดตลง Google Sheets และ Google Drive เรียบร้อยแล้ว`
         : `เปลี่ยนสถานะเป็น "${resolved ? 'ซ่อมแล้ว' : 'รอซ่อม'}" เรียบร้อยแล้ว`,
     });
@@ -1856,29 +1843,22 @@ export default function App() {
     let syncSucceeded = false;
     let apiActivationUrl: string | undefined;
 
-    // Save locally first so data is preserved if signInWithRedirect triggers
+    // Save locally first
     const preSavedFuel = saveFuelLog(logToSave);
     setFuelLogs(preSavedFuel);
 
     const isAdmin = currentUser?.role === 'admin';
 
-    // 1. Ensure Google Auth & Spreadsheet (Prompt only for Admin)
-    const { token, spreadsheetId, redirected } = await ensureTokenAndSheet(isAdmin);
-    if (redirected) return;
+    // 1. Check optional Google token or login-free Apps Script Bridge
+    const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+    const activeToken = token || '';
+    const canWriteCloud = Boolean((activeToken || bridgeActive) && spreadsheetId);
 
-    if (!token) {
-      if (isAdmin) {
-        syncErrors.push('ยังไม่ได้ลงชื่อเข้าใช้ Google (กรุณากดเปิดเมนู Google Sheets เพื่อเชื่อมต่อบัญชี Google)');
-      }
-    } else if (!spreadsheetId) {
-      if (isAdmin) {
-        syncErrors.push('ยังไม่มี Google Spreadsheet รองรับ (กรุณากดเปิดเมนู Google Sheets เพื่อสร้างหรือเชื่อมต่อ)');
-      }
-    } else {
+    if (canWriteCloud && spreadsheetId) {
       // 1. Upload receipt / slip photo to Google Drive
       if (logToSave.receiptPhotoUrl && logToSave.receiptPhotoUrl.startsWith('data:')) {
         try {
-          const driveRes = await uploadFuelReceiptToDrive(token, logToSave);
+          const driveRes = await uploadFuelReceiptToDrive(activeToken, logToSave);
           logToSave.receiptDriveUrl = driveRes.receiptDriveUrl;
           logToSave.driveFolderUrl = driveRes.driveFolderUrl;
           driveSucceeded = Boolean(driveRes.receiptDriveUrl);
@@ -1892,7 +1872,7 @@ export default function App() {
 
       // 2. Append to Google Sheets Tab 'ประวัติการเติมน้ำมัน_BLS'
       try {
-        await appendFuelLogToSheet(spreadsheetId, logToSave, token);
+        await appendFuelLogToSheet(spreadsheetId, logToSave, activeToken);
         syncSucceeded = true;
         logToSave.googleSheetsSyncStatus = 'synced';
       } catch (sheetErr: any) {
@@ -1917,19 +1897,19 @@ export default function App() {
       setVehicles(updatedVehicles);
       saveVehicles(updatedVehicles);
 
-      if (token && spreadsheetId) {
-        syncVehiclesToSheet(spreadsheetId, updatedVehicles, token).catch((err) => {
+      if (canWriteCloud && spreadsheetId) {
+        syncVehiclesToSheet(spreadsheetId, updatedVehicles, activeToken).catch((err) => {
           console.warn('Vehicle fleet sync warning:', err);
         });
       }
     }
 
     // Auto-sync entire fuel logs list to Google Sheets & Drive Master DB
-    if (token && spreadsheetId) {
-      syncFuelLogsToSheet(spreadsheetId, updated, token).catch((err) => {
+    if (canWriteCloud && spreadsheetId) {
+      syncFuelLogsToSheet(spreadsheetId, updated, activeToken).catch((err) => {
         console.warn('Fuel logs mirror sync warning:', err);
       });
-      saveCurrentDatabaseSnapshotToDrive(token);
+      saveCurrentDatabaseSnapshotToDrive(activeToken);
     }
 
     logSystemActivityAndSyncSheets(
@@ -1953,7 +1933,7 @@ export default function App() {
         linkUrl: apiActivationUrl || googleSheetsConfig.spreadsheetUrl,
         linkText: apiActivationUrl ? 'เปิดหน้าเปิดใช้งาน API ใน Google Cloud' : 'ตรวจสอบการเชื่อมต่อ Google',
       });
-    } else {
+    } else if (canWriteCloud) {
       setToastNotification({
         type: 'success',
         title: 'บันทึกประวัติเติมน้ำมันสำเร็จและซิงค์ครบถ้วน!',
@@ -1963,6 +1943,12 @@ export default function App() {
           ? 'เปิดดูสลิปใน Google Drive'
           : 'เปิดดูใน Google Sheets',
       });
+    } else {
+      setToastNotification({
+        type: 'success',
+        title: 'บันทึกประวัติเติมน้ำมันสำเร็จ!',
+        message: `บันทึกการเติมน้ำมันรถ ${log.vehicleCode} (${log.liters} ลิตร) เรียบร้อยแล้ว`,
+      });
     }
   };
 
@@ -1971,11 +1957,11 @@ export default function App() {
     const updated = deleteFuelLog(id);
     setFuelLogs(updated);
 
-    const { token, spreadsheetId } = await ensureTokenAndSheet(false);
-    if (token && spreadsheetId) {
+    const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+    if ((token || bridgeActive) && spreadsheetId) {
       try {
-        await syncFuelLogsToSheet(spreadsheetId, updated, token);
-        await saveCurrentDatabaseSnapshotToDrive(token);
+        await syncFuelLogsToSheet(spreadsheetId, updated, token || '');
+        await saveCurrentDatabaseSnapshotToDrive(token || '');
       } catch (err: any) {
         console.warn('Delete fuel log sheet sync warning:', err?.message || err);
         const formatted = formatGoogleApiError(err?.message || 'ไม่สามารถลบข้อมูลจาก Google Sheets ได้', 'Google Sheets API');
@@ -2017,25 +2003,18 @@ export default function App() {
       const syncErrors: string[] = [];
       let apiActivationUrl: string | undefined;
 
-      const { token, spreadsheetId, redirected } = await ensureTokenAndSheet(isAdmin);
-      if (redirected) return;
+      const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+      const activeToken = token || '';
+      const canWriteCloud = Boolean((activeToken || bridgeActive) && spreadsheetId);
 
-      if (!token) {
-        if (isAdmin) {
-          syncErrors.push('ยังไม่ได้ลงชื่อเข้าใช้ Google');
-        }
-      } else if (!spreadsheetId) {
-        if (isAdmin) {
-          syncErrors.push('ยังไม่มี Google Spreadsheet รองรับ');
-        }
-      } else {
+      if (canWriteCloud && spreadsheetId) {
         try {
-          await appendEquipmentInspectionToSheet(spreadsheetId, recordToSave, token);
+          await appendEquipmentInspectionToSheet(spreadsheetId, recordToSave, activeToken);
           recordToSave.googleSheetsSyncStatus = 'synced';
           const updated = saveEquipmentInspection(recordToSave);
           setEquipmentInspections(updated);
-          await syncEquipmentInspectionsToSheet(spreadsheetId, updated, token).catch(console.warn);
-          await saveCurrentDatabaseSnapshotToDrive(token);
+          await syncEquipmentInspectionsToSheet(spreadsheetId, updated, activeToken).catch(console.warn);
+          await saveCurrentDatabaseSnapshotToDrive(activeToken);
         } catch (sheetErr: any) {
           const formatted = formatGoogleApiError(sheetErr?.message || 'บันทึกลงตารางไม่สำเร็จ', 'Google Sheets API');
           apiActivationUrl = formatted.activationUrl;
@@ -2064,13 +2043,19 @@ export default function App() {
           linkUrl: apiActivationUrl || googleSheetsConfig.spreadsheetUrl,
           linkText: apiActivationUrl ? 'เปิดหน้าเปิดใช้งาน API ใน Google Cloud' : 'ตรวจสอบการเชื่อมต่อ Google',
         });
-      } else {
+      } else if (canWriteCloud) {
         setToastNotification({
           type: 'success',
           title: 'บันทึกตรวจอุปกรณ์ BLS และซิงค์ครบถ้วน!',
           message: `บันทึก ${record.teamLabel} ประจำวันที่ ${record.inspectDateFormatted} ลง Google Sheets & Google Drive เรียบร้อยแล้ว`,
           linkUrl: googleSheetsConfig.spreadsheetUrl,
           linkText: 'เปิดดูใน Google Sheets',
+        });
+      } else {
+        setToastNotification({
+          type: 'success',
+          title: 'บันทึกผลตรวจความพร้อมอุปกรณ์สำเร็จ!',
+          message: `บันทึกข้อมูล ${record.teamLabel} ประจำวันที่ ${record.inspectDateFormatted} เรียบร้อยแล้ว`,
         });
       }
     } catch (err: any) {
@@ -2091,11 +2076,11 @@ export default function App() {
     const updated = deleteEquipmentInspection(id);
     setEquipmentInspections(updated);
 
-    const { token, spreadsheetId } = await ensureTokenAndSheet(false);
-    if (token && spreadsheetId) {
+    const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+    if ((token || bridgeActive) && spreadsheetId) {
       try {
-        await syncEquipmentInspectionsToSheet(spreadsheetId, updated, token);
-        await saveCurrentDatabaseSnapshotToDrive(token);
+        await syncEquipmentInspectionsToSheet(spreadsheetId, updated, token || '');
+        await saveCurrentDatabaseSnapshotToDrive(token || '');
       } catch (err: any) {
         console.warn('Delete equipment inspection sync warning:', err?.message || err);
       }
@@ -2129,25 +2114,18 @@ export default function App() {
       const syncErrors: string[] = [];
       let apiActivationUrl: string | undefined;
 
-      const { token, spreadsheetId, redirected } = await ensureTokenAndSheet(isAdmin);
-      if (redirected) return;
+      const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+      const activeToken = token || '';
+      const canWriteCloud = Boolean((activeToken || bridgeActive) && spreadsheetId);
 
-      if (!token) {
-        if (isAdmin) {
-          syncErrors.push('ยังไม่ได้ลงชื่อเข้าใช้ Google');
-        }
-      } else if (!spreadsheetId) {
-        if (isAdmin) {
-          syncErrors.push('ยังไม่มี Google Spreadsheet รองรับ');
-        }
-      } else {
+      if (canWriteCloud && spreadsheetId) {
         try {
-          await appendRequisitionToSheet(spreadsheetId, recordToSave, token);
+          await appendRequisitionToSheet(spreadsheetId, recordToSave, activeToken);
           recordToSave.googleSheetsSyncStatus = 'synced';
           const updated = saveEquipmentRequisition(recordToSave);
           setEquipmentRequisitions(updated);
-          await syncRequisitionsToSheet(spreadsheetId, updated, token).catch(console.warn);
-          await saveCurrentDatabaseSnapshotToDrive(token);
+          await syncRequisitionsToSheet(spreadsheetId, updated, activeToken).catch(console.warn);
+          await saveCurrentDatabaseSnapshotToDrive(activeToken);
         } catch (sheetErr: any) {
           const formatted = formatGoogleApiError(sheetErr?.message || 'บันทึกลงตารางไม่สำเร็จ', 'Google Sheets API');
           apiActivationUrl = formatted.activationUrl;
@@ -2176,13 +2154,19 @@ export default function App() {
           linkUrl: apiActivationUrl || googleSheetsConfig.spreadsheetUrl,
           linkText: apiActivationUrl ? 'เปิดหน้าเปิดใช้งาน API ใน Google Cloud' : 'ตรวจสอบการเชื่อมต่อ Google',
         });
-      } else {
+      } else if (canWriteCloud) {
         setToastNotification({
           type: 'success',
           title: 'บันทึกใบเบิกอุปกรณ์และซิงค์ครบถ้วน!',
           message: `บันทึกใบเบิก ${record.requisitionNo} (${record.totalItemTypes} รายการ) ลง Google Sheets & Google Drive เรียบร้อยแล้ว`,
           linkUrl: googleSheetsConfig.spreadsheetUrl,
           linkText: 'เปิดดูใน Google Sheets',
+        });
+      } else {
+        setToastNotification({
+          type: 'success',
+          title: 'ส่งใบเบิกอุปกรณ์สำเร็จ!',
+          message: `บันทึกใบเบิกเลขที่ ${record.requisitionNo} (${record.totalItemTypes} รายการ, ${record.totalQuantity} หน่วย) เรียบร้อยแล้ว`,
         });
       }
     } catch (err: any) {
@@ -2220,11 +2204,11 @@ export default function App() {
     const updated = saveEquipmentRequisition(updatedItem);
     setEquipmentRequisitions(updated);
 
-    const { token, spreadsheetId } = await ensureTokenAndSheet(false);
-    if (token && spreadsheetId) {
+    const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+    if ((token || bridgeActive) && spreadsheetId) {
       try {
-        await syncRequisitionsToSheet(spreadsheetId, updated, token);
-        await saveCurrentDatabaseSnapshotToDrive(token);
+        await syncRequisitionsToSheet(spreadsheetId, updated, token || '');
+        await saveCurrentDatabaseSnapshotToDrive(token || '');
       } catch (err: any) {
         console.warn('Update requisition status sync warning:', err?.message || err);
       }
@@ -2253,11 +2237,11 @@ export default function App() {
     const updated = deleteEquipmentRequisition(id);
     setEquipmentRequisitions(updated);
 
-    const { token, spreadsheetId } = await ensureTokenAndSheet(false);
-    if (token && spreadsheetId) {
+    const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+    if ((token || bridgeActive) && spreadsheetId) {
       try {
-        await syncRequisitionsToSheet(spreadsheetId, updated, token);
-        await saveCurrentDatabaseSnapshotToDrive(token);
+        await syncRequisitionsToSheet(spreadsheetId, updated, token || '');
+        await saveCurrentDatabaseSnapshotToDrive(token || '');
       } catch (err: any) {
         console.warn('Delete requisition sync warning:', err?.message || err);
       }
@@ -2406,7 +2390,7 @@ export default function App() {
         }}
         onSwitchRole={handleSwitchRole}
         onLogout={handleLogout}
-        sheetsConnected={Boolean(googleSheetsConfig.spreadsheetId)}
+        sheetsConnected={Boolean(googleSheetsConfig.spreadsheetId || hasNoLoginBridge())}
         spreadsheetUrl={googleSheetsConfig.spreadsheetUrl}
         activeDamageCount={damageRecords.filter((d) => !d.resolved).length}
         onTriggerSyncBack={currentUser.role === 'admin' ? handleTriggerSyncBack : undefined}

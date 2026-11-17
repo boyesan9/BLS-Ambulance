@@ -97,6 +97,9 @@ export interface InspectionRecord {
 export interface GoogleSheetsConfig {
   spreadsheetId?: string;
   spreadsheetUrl?: string;
+  driveFolderId?: string;
+  driveFolderUrl?: string;
+  appsScriptUrl?: string;
   sheetName?: string;
   lastSyncedAt?: string;
   autoSync: boolean;
