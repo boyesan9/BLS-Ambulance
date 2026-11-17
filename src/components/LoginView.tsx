@@ -127,7 +127,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
               className="h-20 w-20 sm:h-24 sm:w-24 rounded-2xl bg-white/95 p-1.5 object-contain shadow-lg ring-1 ring-white/30"
             />
             <img
-              src="/assets/aistudio/______33becaaf.png"
+              src="/assets/aistudio/______cca77961.png"
               alt="กู้ชีพ อบต.หงษ์เจริญ 1669 EMS"
               className="h-20 w-20 sm:h-24 sm:w-24 rounded-2xl bg-white/95 p-1.5 object-contain shadow-lg ring-1 ring-white/30"
             />
