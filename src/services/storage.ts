@@ -175,31 +175,70 @@ export function safelyPersistInspections(records: InspectionRecord[]) {
   } catch (quotaErr) {
     console.warn('LocalStorage quota warning, compressing storage payload...', quotaErr);
     try {
-      // Keep full data in IndexedDB, but in localStorage strip inline base64 for records beyond the first one
-      const compacted = records.slice(0, 15).map((r, idx) => {
+      // Keep full base64 data in IndexedDB, and in localStorage substitute Drive URLs for large inline images beyond the first record
+      const compacted = records.slice(0, 20).map((r, idx) => {
         if (idx === 0) return r; // keep the newest one
+        const resolveCompactSide = (photoVal?: string, driveUrl?: string) => {
+          if (!photoVal || photoVal.length <= 4000) return photoVal || driveUrl || '';
+          return toDisplayableDriveImageUrl(undefined, driveUrl) || driveUrl || '';
+        };
         return {
           ...r,
           photos: {
-            front: r.photos.front?.length > 4000 ? r.driveLinks?.frontPhotoUrl || '' : r.photos.front,
-            rear: r.photos.rear?.length > 4000 ? r.driveLinks?.rearPhotoUrl || '' : r.photos.rear,
-            left: r.photos.left?.length > 4000 ? r.driveLinks?.leftPhotoUrl || '' : r.photos.left,
-            right: r.photos.right?.length > 4000 ? r.driveLinks?.rightPhotoUrl || '' : r.photos.right,
+            front: resolveCompactSide(r.photos?.front, r.driveLinks?.frontPhotoUrl),
+            rear: resolveCompactSide(r.photos?.rear, r.driveLinks?.rearPhotoUrl),
+            left: resolveCompactSide(r.photos?.left, r.driveLinks?.leftPhotoUrl),
+            right: resolveCompactSide(r.photos?.right, r.driveLinks?.rightPhotoUrl),
           },
           documentAttachment: r.documentAttachment
-            ? { ...r.documentAttachment, dataUrl: r.driveLinks?.documentUrl || '' }
+            ? {
+                ...r.documentAttachment,
+                dataUrl:
+                  r.documentAttachment.dataUrl && r.documentAttachment.dataUrl.length <= 4000
+                    ? r.documentAttachment.dataUrl
+                    : r.driveLinks?.documentUrl || '',
+              }
             : undefined,
         };
       });
       localStorage.setItem(INSPECTIONS_STORAGE_KEY, JSON.stringify(compacted));
     } catch (err2) {
-      console.warn('LocalStorage still full, storing lightweight metadata only', err2);
+      console.warn('LocalStorage still full, storing metadata + Drive URLs only', err2);
       try {
-        const lightweight = records.slice(0, 8).map((r) => ({
+        const lightweight = records.slice(0, 12).map((r) => ({
           ...r,
-          photos: { front: '', rear: '', left: '', right: '' },
+          photos: {
+            front:
+              r.photos?.front && !r.photos.front.startsWith('data:')
+                ? r.photos.front
+                : toDisplayableDriveImageUrl(undefined, r.driveLinks?.frontPhotoUrl) ||
+                  r.driveLinks?.frontPhotoUrl ||
+                  '',
+            rear:
+              r.photos?.rear && !r.photos.rear.startsWith('data:')
+                ? r.photos.rear
+                : toDisplayableDriveImageUrl(undefined, r.driveLinks?.rearPhotoUrl) ||
+                  r.driveLinks?.rearPhotoUrl ||
+                  '',
+            left:
+              r.photos?.left && !r.photos.left.startsWith('data:')
+                ? r.photos.left
+                : toDisplayableDriveImageUrl(undefined, r.driveLinks?.leftPhotoUrl) ||
+                  r.driveLinks?.leftPhotoUrl ||
+                  '',
+            right:
+              r.photos?.right && !r.photos.right.startsWith('data:')
+                ? r.photos.right
+                : toDisplayableDriveImageUrl(undefined, r.driveLinks?.rightPhotoUrl) ||
+                  r.driveLinks?.rightPhotoUrl ||
+                  '',
+          },
           documentAttachment: r.documentAttachment
-            ? { name: r.documentAttachment.name, type: r.documentAttachment.type, dataUrl: '' }
+            ? {
+                name: r.documentAttachment.name,
+                type: r.documentAttachment.type,
+                dataUrl: r.driveLinks?.documentUrl || '',
+              }
             : undefined,
         }));
         localStorage.setItem(INSPECTIONS_STORAGE_KEY, JSON.stringify(lightweight));
@@ -293,16 +332,82 @@ export function replaceAllInspections(records: InspectionRecord[]): InspectionRe
   return records;
 }
 
+function pickBestSidePhoto(a?: string, b?: string, driveUrl?: string): string {
+  const isInlinePhoto = (val?: string) =>
+    Boolean(val && val.startsWith('data:image/') && !val.startsWith('data:image/svg+xml'));
+  if (isInlinePhoto(a)) return a as string;
+  if (isInlinePhoto(b)) return b as string;
+  return (
+    (a && a.trim()) ||
+    (b && b.trim()) ||
+    toDisplayableDriveImageUrl(undefined, driveUrl) ||
+    ''
+  );
+}
+
+export function mergeInspectionRecordMedia(
+  primary: InspectionRecord,
+  secondary?: InspectionRecord
+): InspectionRecord {
+  if (!secondary) return primary;
+  const mergedDriveLinks = {
+    ...(secondary.driveLinks || {}),
+    ...(primary.driveLinks || {}),
+  };
+  return {
+    ...primary,
+    photos: {
+      front: pickBestSidePhoto(
+        primary.photos?.front,
+        secondary.photos?.front,
+        mergedDriveLinks.frontPhotoUrl
+      ),
+      rear: pickBestSidePhoto(
+        primary.photos?.rear,
+        secondary.photos?.rear,
+        mergedDriveLinks.rearPhotoUrl
+      ),
+      left: pickBestSidePhoto(
+        primary.photos?.left,
+        secondary.photos?.left,
+        mergedDriveLinks.leftPhotoUrl
+      ),
+      right: pickBestSidePhoto(
+        primary.photos?.right,
+        secondary.photos?.right,
+        mergedDriveLinks.rightPhotoUrl
+      ),
+    },
+    documentAttachment:
+      primary.documentAttachment?.dataUrl
+        ? primary.documentAttachment
+        : secondary.documentAttachment || primary.documentAttachment,
+    driveLinks: Object.keys(mergedDriveLinks).length > 0 ? mergedDriveLinks : undefined,
+  };
+}
+
 export async function syncInspectionsFromIndexedDb(): Promise<InspectionRecord[]> {
+  const localRecords = getStoredInspections();
   try {
     const idbRecords = await idbGetAllInspections();
     if (idbRecords && idbRecords.length > 0) {
-      return idbRecords;
+      const localMap = new Map(localRecords.map((r) => [r.id, r]));
+      const idbMap = new Map(idbRecords.map((r) => [r.id, r]));
+      const merged: InspectionRecord[] = idbRecords.map((idbRec) =>
+        mergeInspectionRecordMedia(idbRec, localMap.get(idbRec.id))
+      );
+      for (const loc of localRecords) {
+        if (!idbMap.has(loc.id)) {
+          merged.push(loc);
+        }
+      }
+      merged.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      return merged;
     }
   } catch (e) {
     console.warn('Sync from IDB error:', e);
   }
-  return getStoredInspections();
+  return localRecords;
 }
 
 export function clearAllSystemData(clearVehiclesAndStaff = false) {
@@ -585,6 +690,16 @@ export function saveAllFuelLogs(logs: FuelLogRecord[]) {
   }
 }
 
+export function extractGoogleDriveFileId(url?: string): string | undefined {
+  if (!url) return undefined;
+  const trimmed = url.trim();
+  const fileMatch =
+    trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]+)/) ||
+    trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/) ||
+    trimmed.match(/lh3\.googleusercontent\.com\/d\/([a-zA-Z0-9_-]+)/);
+  return fileMatch?.[1];
+}
+
 /**
  * Converts a Google Drive webViewLink or raw image URL into a displayable <img> src
  */
@@ -594,22 +709,53 @@ export function toDisplayableDriveImageUrl(rawUrl?: string, driveUrl?: string): 
     if (
       rawUrl.startsWith('data:image/') ||
       rawUrl.startsWith('blob:') ||
-      (rawUrl.startsWith('http') && !rawUrl.includes('drive.google.com/file/d/') && !rawUrl.includes('drive.google.com/open'))
+      (rawUrl.startsWith('http') &&
+        !rawUrl.includes('drive.google.com/file/d/') &&
+        !rawUrl.includes('drive.google.com/open') &&
+        !rawUrl.includes('drive.google.com/uc'))
     ) {
       return rawUrl;
     }
   }
   const target = (rawUrl && !isSvg(rawUrl) ? rawUrl : undefined) || driveUrl;
   if (target) {
-    const match = target.match(/\/file\/d\/([a-zA-Z0-9_-]+)/) || target.match(/[?&]id=([a-zA-Z0-9_-]+)/);
-    if (match && match[1]) {
-      return `https://lh3.googleusercontent.com/d/${match[1]}=w1000`;
+    const fileId = extractGoogleDriveFileId(target);
+    if (fileId) {
+      return `https://lh3.googleusercontent.com/d/${fileId}=w1200`;
     }
     if (target.startsWith('http') || target.startsWith('data:')) {
       return target;
     }
   }
-  return rawUrl;
+  return rawUrl || undefined;
+}
+
+/**
+ * Returns an ordered list of image URLs to attempt when loading historical inspection/damage photos
+ */
+export function getDriveImageFallbackUrls(rawUrl?: string, driveUrl?: string): string[] {
+  const candidates: string[] = [];
+  const pushUnique = (u?: string) => {
+    if (u && u.trim() && !candidates.includes(u.trim())) {
+      candidates.push(u.trim());
+    }
+  };
+
+  if (rawUrl && (rawUrl.startsWith('data:image/') || rawUrl.startsWith('blob:'))) {
+    pushUnique(rawUrl);
+  }
+
+  const primary = toDisplayableDriveImageUrl(rawUrl, driveUrl);
+  pushUnique(primary);
+
+  const fileId = extractGoogleDriveFileId(rawUrl) || extractGoogleDriveFileId(driveUrl);
+  if (fileId) {
+    pushUnique(`https://lh3.googleusercontent.com/d/${fileId}=w1200`);
+    pushUnique(`https://drive.google.com/thumbnail?id=${fileId}&sz=w1200`);
+    pushUnique(`https://drive.google.com/uc?export=view&id=${fileId}`);
+  }
+
+  return candidates;
 }
 
 // ============================================

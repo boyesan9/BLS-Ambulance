@@ -235,6 +235,21 @@ export async function uploadFileToDrive(
   }
 
   const result = await uploadRes.json();
+
+  // Best-effort public read permission so historical inspection photos display in any browser/device
+  try {
+    await fetch(`https://www.googleapis.com/drive/v3/files/${result.id}/permissions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ role: 'reader', type: 'anyone' }),
+    });
+  } catch (permErr) {
+    console.warn('Could not set anyone reader permission on Drive file:', permErr);
+  }
+
   return {
     fileId: result.id,
     webViewLink: result.webViewLink || `https://drive.google.com/file/d/${result.id}/view`,
@@ -248,8 +263,9 @@ export async function uploadInspectionMediaToDrive(
 ): Promise<GoogleDriveLinks> {
   const { folderId, folderUrl } = await getOrCreateInspectionFolder(accessToken);
   const links: GoogleDriveLinks = {
-    folderId,
-    folderUrl,
+    ...(record.driveLinks || {}),
+    folderId: record.driveLinks?.folderId || folderId,
+    folderUrl: record.driveLinks?.folderUrl || folderUrl,
   };
 
   const safeCode = record.vehicleCode.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -257,9 +273,18 @@ export async function uploadInspectionMediaToDrive(
 
   // Upload 4 side photos
   const photoKeys: Array<keyof typeof record.photos> = ['front', 'rear', 'left', 'right'];
+  let attemptedUploads = 0;
+  let succeededUploads = 0;
+  let lastError: any = null;
+
   for (const key of photoKeys) {
     const photoDataUrl = record.photos[key];
-    if (photoDataUrl && photoDataUrl.startsWith('data:')) {
+    if (
+      photoDataUrl &&
+      photoDataUrl.startsWith('data:') &&
+      !photoDataUrl.startsWith('data:image/svg+xml')
+    ) {
+      attemptedUploads += 1;
       const fileName = `${safeCode}_${key.toUpperCase()}_${safeId}.jpg`;
       try {
         const uploaded = await uploadFileToDrive(
@@ -269,6 +294,7 @@ export async function uploadInspectionMediaToDrive(
           folderId,
           'BLS_Ambulance_Inspections_Media'
         );
+        succeededUploads += 1;
         if (uploaded.folderUrl) links.folderUrl = uploaded.folderUrl;
         if (uploaded.folderId) links.folderId = uploaded.folderId;
         if (key === 'front') links.frontPhotoUrl = uploaded.webViewLink;
@@ -276,13 +302,18 @@ export async function uploadInspectionMediaToDrive(
         if (key === 'left') links.leftPhotoUrl = uploaded.webViewLink;
         if (key === 'right') links.rightPhotoUrl = uploaded.webViewLink;
       } catch (e) {
+        lastError = e;
         console.warn(`Failed to upload ${key} photo to Google Drive`, e);
       }
     }
   }
 
   // Upload document attachment if present
-  if (record.documentAttachment && record.documentAttachment.dataUrl.startsWith('data:')) {
+  if (
+    record.documentAttachment &&
+    record.documentAttachment.dataUrl &&
+    record.documentAttachment.dataUrl.startsWith('data:')
+  ) {
     const docName = `${safeCode}_DOC_${record.documentAttachment.name}`;
     try {
       const uploadedDoc = await uploadFileToDrive(
@@ -298,6 +329,10 @@ export async function uploadInspectionMediaToDrive(
     } catch (e) {
       console.warn('Failed to upload document attachment to Google Drive', e);
     }
+  }
+
+  if (attemptedUploads > 0 && succeededUploads === 0 && lastError) {
+    throw lastError;
   }
 
   return links;

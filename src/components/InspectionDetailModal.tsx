@@ -17,7 +17,55 @@ import {
 } from 'lucide-react';
 import { PrintReportView } from './PrintReportView';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
-import { toDisplayableDriveImageUrl } from '../services/storage';
+import { getDriveImageFallbackUrls, toDisplayableDriveImageUrl } from '../services/storage';
+
+const ResilientInspectionImage: React.FC<{
+  rawUrl?: string;
+  driveUrl?: string;
+  alt: string;
+  className?: string;
+  onImageClick?: (resolvedUrl: string) => void;
+  fallbackDriveHref?: string;
+}> = ({ rawUrl, driveUrl, alt, className = '', onImageClick, fallbackDriveHref }) => {
+  const candidates = getDriveImageFallbackUrls(rawUrl, driveUrl);
+  const [attemptIdx, setAttemptIdx] = useState(0);
+  const currentUrl = candidates[attemptIdx];
+
+  if (!currentUrl) {
+    return (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 p-2 text-center text-xs text-slate-400">
+        <span>ไม่มีภาพ</span>
+        {(driveUrl || fallbackDriveHref) && (
+          <a
+            href={driveUrl || fallbackDriveHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 rounded bg-sky-600/90 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-sky-500"
+          >
+            <ExternalLink className="h-3 w-3" /> ดูใน Drive
+          </a>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={currentUrl}
+      alt={alt}
+      className={className}
+      referrerPolicy="no-referrer"
+      onClick={() => onImageClick?.(currentUrl)}
+      onError={() => {
+        if (attemptIdx + 1 < candidates.length) {
+          setAttemptIdx((prev) => prev + 1);
+        } else {
+          setAttemptIdx(candidates.length);
+        }
+      }}
+    />
+  );
+};
 
 interface InspectionDetailModalProps {
   record: InspectionRecord | null;
@@ -36,7 +84,11 @@ export const InspectionDetailModal: React.FC<InspectionDetailModalProps> = ({
   isAdmin = false,
   onDeleteRecord,
 }) => {
-  const [selectedImage, setSelectedImage] = useState<{ title: string; url: string } | null>(null);
+  const [selectedImage, setSelectedImage] = useState<{
+    title: string;
+    url: string;
+    driveUrl?: string;
+  } | null>(null);
   const [docPreviewOpen, setDocPreviewOpen] = useState(false);
   const [showPrintReport, setShowPrintReport] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -190,8 +242,8 @@ export const InspectionDetailModal: React.FC<InspectionDetailModalProps> = ({
               )}
             </div>
 
-            {/* Google Drive Links Bar (Admin Only) */}
-            {isAdmin && record.driveLinks?.folderUrl && (
+            {/* Google Drive Links Bar */}
+            {record.driveLinks?.folderUrl && (
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-sky-200 bg-sky-50/60 p-3.5 dark:border-sky-900/50 dark:bg-sky-950/30">
                 <div className="flex items-center gap-2">
                   <FolderSync className="h-5 w-5 text-sky-600 dark:text-sky-400" />
@@ -223,7 +275,7 @@ export const InspectionDetailModal: React.FC<InspectionDetailModalProps> = ({
                 <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
                   รูปถ่ายสภาพรถ 4 ด้าน (Timestamp Watermarked)
                 </h4>
-                {isAdmin && record.driveLinks?.folderUrl && (
+                {record.driveLinks?.folderUrl && (
                   <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
                     ✓ ซิงค์ลง Google Drive เรียบร้อย
                   </span>
@@ -236,51 +288,78 @@ export const InspectionDetailModal: React.FC<InspectionDetailModalProps> = ({
                   { label: 'ด้านซ้าย (Left)', url: record.photos.left, driveUrl: record.driveLinks?.leftPhotoUrl },
                   { label: 'ด้านขวา (Right)', url: record.photos.right, driveUrl: record.driveLinks?.rightPhotoUrl },
                 ].map((p, idx) => {
-                  const displayUrl = toDisplayableDriveImageUrl(p.url, p.driveUrl) || p.url;
+                  const candidates = getDriveImageFallbackUrls(p.url, p.driveUrl);
+                  const displayUrl = candidates[0] || '';
+                  const externalHref = p.driveUrl || record.driveLinks?.folderUrl;
                   return (
-                  <div
-                    key={idx}
-                    className="group relative aspect-[4/3] overflow-hidden rounded-xl border border-slate-200 bg-slate-100 dark:border-slate-800 dark:bg-slate-800"
-                  >
-                    {displayUrl ? (
-                      <>
-                        <img
-                          src={displayUrl}
-                          alt={p.label}
-                          className="h-full w-full object-cover"
-                          referrerPolicy="no-referrer"
-                        />
-                        <div className="absolute inset-0 flex items-center justify-center gap-2 bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
-                          <button
-                            type="button"
-                            onClick={() => setSelectedImage({ title: p.label, url: displayUrl })}
-                            className="rounded-lg bg-white/90 p-2 text-slate-900 hover:bg-white shadow"
-                            title="ดูภาพขยาย"
-                          >
-                            <Eye className="h-4 w-4" />
-                          </button>
-                          {isAdmin && p.driveUrl && (
+                    <div
+                      key={idx}
+                      className="group relative aspect-[4/3] overflow-hidden rounded-xl border border-slate-200 bg-slate-100 dark:border-slate-800 dark:bg-slate-800"
+                    >
+                      {displayUrl ? (
+                        <>
+                          <ResilientInspectionImage
+                            rawUrl={p.url}
+                            driveUrl={p.driveUrl}
+                            fallbackDriveHref={record.driveLinks?.folderUrl}
+                            alt={p.label}
+                            className="h-full w-full cursor-pointer object-cover transition-transform duration-200 group-hover:scale-105"
+                            onImageClick={(resolved) =>
+                              setSelectedImage({
+                                title: p.label,
+                                url: resolved,
+                                driveUrl: p.driveUrl,
+                              })
+                            }
+                          />
+                          <div className="absolute right-1.5 top-1.5 flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSelectedImage({
+                                  title: p.label,
+                                  url: displayUrl,
+                                  driveUrl: p.driveUrl,
+                                })
+                              }
+                              className="inline-flex items-center gap-1 rounded-md bg-slate-950/75 px-2 py-1 text-[10px] font-semibold text-white hover:bg-slate-900 shadow backdrop-blur-sm"
+                              title="ดูภาพขยาย"
+                            >
+                              <Eye className="h-3 w-3" />
+                              <span>ขยาย</span>
+                            </button>
+                            {externalHref && (
+                              <a
+                                href={externalHref}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="rounded-md bg-sky-600/90 p-1 text-white hover:bg-sky-500 shadow backdrop-blur-sm"
+                                title="เปิดดูใน Google Drive"
+                              >
+                                <ExternalLink className="h-3 w-3" />
+                              </a>
+                            )}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 p-2 text-center text-xs text-slate-400">
+                          <span>ไม่มีภาพ</span>
+                          {externalHref && (
                             <a
-                              href={p.driveUrl}
+                              href={externalHref}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="rounded-lg bg-sky-600/90 p-2 text-white hover:bg-sky-500 shadow"
-                              title="เปิดดูใน Google Drive"
+                              className="inline-flex items-center gap-1 rounded bg-sky-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-sky-500"
                             >
-                              <ExternalLink className="h-4 w-4" />
+                              <ExternalLink className="h-3 w-3" /> ดูใน Drive
                             </a>
                           )}
                         </div>
-                      </>
-                    ) : (
-                      <div className="flex h-full w-full items-center justify-center text-xs text-slate-400">
-                        ไม่มีภาพ
+                      )}
+                      <div className="pointer-events-none absolute bottom-1.5 left-1.5 rounded bg-slate-950/75 px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">
+                        {p.label}
                       </div>
-                    )}
-                    <div className="absolute bottom-1.5 left-1.5 rounded bg-slate-950/70 px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">
-                      {p.label}
                     </div>
-                  </div>
                   );
                 })}
               </div>
@@ -413,18 +492,38 @@ export const InspectionDetailModal: React.FC<InspectionDetailModalProps> = ({
             onClick={() => setSelectedImage(null)}
             className="fixed inset-0 z-60 flex items-center justify-center bg-black/90 p-4"
           >
-            <div className="relative max-h-[90vh] max-w-4xl">
-              <button
-                onClick={() => setSelectedImage(null)}
-                className="absolute -top-10 right-0 text-white"
-              >
-                ✕ ปิด
-              </button>
-              <img
-                src={selectedImage.url}
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="relative max-h-[90vh] max-w-4xl flex flex-col items-center"
+            >
+              <div className="mb-2 flex w-full items-center justify-between gap-4 text-white">
+                <span className="text-xs font-semibold">{selectedImage.title}</span>
+                <div className="flex items-center gap-3">
+                  {(selectedImage.driveUrl || record.driveLinks?.folderUrl) && (
+                    <a
+                      href={selectedImage.driveUrl || record.driveLinks?.folderUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 rounded bg-sky-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-sky-500"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" /> เปิดดูใน Drive
+                    </a>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setSelectedImage(null)}
+                    className="rounded px-2 py-1 text-xs font-semibold hover:bg-white/10"
+                  >
+                    ✕ ปิด
+                  </button>
+                </div>
+              </div>
+              <ResilientInspectionImage
+                rawUrl={selectedImage.url}
+                driveUrl={selectedImage.driveUrl}
+                fallbackDriveHref={record.driveLinks?.folderUrl}
                 alt={selectedImage.title}
-                className="max-h-[85vh] rounded-lg object-contain shadow-2xl"
-                referrerPolicy="no-referrer"
+                className="max-h-[82vh] rounded-lg object-contain shadow-2xl"
               />
             </div>
           </div>

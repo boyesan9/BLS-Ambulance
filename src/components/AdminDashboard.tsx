@@ -457,10 +457,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   {filteredInspections.length > 0 ? (
                     filteredInspections.map((rec) => {
                       const photoCount = [
-                        rec.photos.front,
-                        rec.photos.rear,
-                        rec.photos.left,
-                        rec.photos.right,
+                        rec.photos.front || rec.driveLinks?.frontPhotoUrl,
+                        rec.photos.rear || rec.driveLinks?.rearPhotoUrl,
+                        rec.photos.left || rec.driveLinks?.leftPhotoUrl,
+                        rec.photos.right || rec.driveLinks?.rightPhotoUrl,
                       ].filter(Boolean).length;
 
                       return (
@@ -523,15 +523,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           </td>
 
                           <td className="px-4 py-3.5">
-                            <span
-                              className={`font-mono text-xs tabular-nums font-semibold ${
+                            <button
+                              type="button"
+                              onClick={() => onViewRecordDetail(rec)}
+                              className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-xs tabular-nums font-semibold hover:underline ${
                                 photoCount === 4
                                   ? 'text-emerald-600 dark:text-emerald-400'
                                   : 'text-amber-600 dark:text-amber-400'
                               }`}
+                              title="คลิกเพื่อดูรูปถ่ายสภาพรถ 4 ด้านย้อนหลัง"
                             >
                               {photoCount}/4 ด้าน
-                            </span>
+                            </button>
                           </td>
 
                           {currentUser.role === 'admin' && (

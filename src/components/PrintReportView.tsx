@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { InspectionRecord } from '../types';
 import { Printer, X, ExternalLink, Shield, CheckCircle2, AlertTriangle, XCircle } from 'lucide-react';
+import { toDisplayableDriveImageUrl } from '../services/storage';
 
 interface PrintReportViewProps {
   record: InspectionRecord;
@@ -174,19 +175,19 @@ export const PrintReportView: React.FC<PrintReportViewProps> = ({ record, onClos
   </div>
   <div class="photos">
     <div class="photo-box">
-      <img src="${record.photos.front}" alt="ด้านหน้า" />
+      <img src="${toDisplayableDriveImageUrl(record.photos.front, record.driveLinks?.frontPhotoUrl) || record.photos.front || ''}" alt="ด้านหน้า" />
       <div class="photo-label">ด้านหน้า (Front)</div>
     </div>
     <div class="photo-box">
-      <img src="${record.photos.rear}" alt="ด้านหลัง" />
+      <img src="${toDisplayableDriveImageUrl(record.photos.rear, record.driveLinks?.rearPhotoUrl) || record.photos.rear || ''}" alt="ด้านหลัง" />
       <div class="photo-label">ด้านหลัง (Rear)</div>
     </div>
     <div class="photo-box">
-      <img src="${record.photos.left}" alt="ด้านซ้าย" />
+      <img src="${toDisplayableDriveImageUrl(record.photos.left, record.driveLinks?.leftPhotoUrl) || record.photos.left || ''}" alt="ด้านซ้าย" />
       <div class="photo-label">ด้านซ้าย (Left Side)</div>
     </div>
     <div class="photo-box">
-      <img src="${record.photos.right}" alt="ด้านขวา" />
+      <img src="${toDisplayableDriveImageUrl(record.photos.right, record.driveLinks?.rightPhotoUrl) || record.photos.right || ''}" alt="ด้านขวา" />
       <div class="photo-label">ด้านขวา (Right Side)</div>
     </div>
   </div>
@@ -421,18 +422,36 @@ export const PrintReportView: React.FC<PrintReportViewProps> = ({ record, onClos
             </h4>
             <div className="grid grid-cols-4 gap-2">
               {[
-                { label: 'ด้านหน้า (Front)', url: record.photos.front },
-                { label: 'ด้านหลัง (Rear)', url: record.photos.rear },
-                { label: 'ด้านซ้าย (Left)', url: record.photos.left },
-                { label: 'ด้านขวา (Right)', url: record.photos.right },
+                {
+                  label: 'ด้านหน้า (Front)',
+                  url: toDisplayableDriveImageUrl(record.photos.front, record.driveLinks?.frontPhotoUrl) || record.photos.front,
+                },
+                {
+                  label: 'ด้านหลัง (Rear)',
+                  url: toDisplayableDriveImageUrl(record.photos.rear, record.driveLinks?.rearPhotoUrl) || record.photos.rear,
+                },
+                {
+                  label: 'ด้านซ้าย (Left)',
+                  url: toDisplayableDriveImageUrl(record.photos.left, record.driveLinks?.leftPhotoUrl) || record.photos.left,
+                },
+                {
+                  label: 'ด้านขวา (Right)',
+                  url: toDisplayableDriveImageUrl(record.photos.right, record.driveLinks?.rightPhotoUrl) || record.photos.right,
+                },
               ].map((p, idx) => (
                 <div key={idx} className="rounded-lg border border-slate-200 p-1 text-center bg-slate-50">
-                  <img
-                    src={p.url}
-                    alt={p.label}
-                    className="h-24 w-full rounded object-cover"
-                    referrerPolicy="no-referrer"
-                  />
+                  {p.url ? (
+                    <img
+                      src={p.url}
+                      alt={p.label}
+                      className="h-24 w-full rounded object-cover"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <div className="flex h-24 w-full items-center justify-center rounded bg-slate-100 text-[10px] text-slate-400">
+                      ไม่มีภาพ
+                    </div>
+                  )}
                   <span className="mt-1 block text-[10px] font-bold text-slate-700">{p.label}</span>
                 </div>
               ))}

@@ -352,17 +352,34 @@ export function formatRecordForSheet(record: InspectionRecord): (string | number
     docInfo += ` | ลิงก์ Drive: ${record.driveLinks.documentUrl}`;
   }
 
-  const photosCount = [
-    record.photos.front,
-    record.photos.rear,
-    record.photos.left,
-    record.photos.right,
-  ].filter(Boolean).length;
+  const frontResolved = record.photos.front || record.driveLinks?.frontPhotoUrl;
+  const rearResolved = record.photos.rear || record.driveLinks?.rearPhotoUrl;
+  const leftResolved = record.photos.left || record.driveLinks?.leftPhotoUrl;
+  const rightResolved = record.photos.right || record.driveLinks?.rightPhotoUrl;
+
+  const photosCount = [frontResolved, rearResolved, leftResolved, rightResolved].filter(Boolean).length;
 
   let photosSummary = photosCount ? `ถ่ายครบ 4 ด้าน (${photosCount}/4)` : 'ไม่ครบ';
   if (record.driveLinks?.folderUrl) {
     photosSummary += ` | ลิงก์ Drive: ${record.driveLinks.folderUrl}`;
   }
+  const frontLink =
+    record.driveLinks?.frontPhotoUrl ||
+    (record.photos.front && record.photos.front.startsWith('http') ? record.photos.front : '');
+  const rearLink =
+    record.driveLinks?.rearPhotoUrl ||
+    (record.photos.rear && record.photos.rear.startsWith('http') ? record.photos.rear : '');
+  const leftLink =
+    record.driveLinks?.leftPhotoUrl ||
+    (record.photos.left && record.photos.left.startsWith('http') ? record.photos.left : '');
+  const rightLink =
+    record.driveLinks?.rightPhotoUrl ||
+    (record.photos.right && record.photos.right.startsWith('http') ? record.photos.right : '');
+
+  if (frontLink) photosSummary += ` | หน้า: ${frontLink}`;
+  if (rearLink) photosSummary += ` | หลัง: ${rearLink}`;
+  if (leftLink) photosSummary += ` | ซ้าย: ${leftLink}`;
+  if (rightLink) photosSummary += ` | ขวา: ${rightLink}`;
 
   return [
     record.uploadTimestamp,
@@ -914,9 +931,32 @@ export async function pullAllDataFromGoogleSheets(
         const summaryNotes = rawNotes && rawNotes !== 'ไม่มีปัญหาที่พบ' ? rawNotes : '';
 
         const docUrlMatch = (r[15] || '').match(/https:\/\/[^\s|]+/);
-        const folderUrlMatch = (r[16] || '').match(/https:\/\/[^\s|]+/);
+        const photoCell = r[16] || '';
+        const folderUrlMatch =
+          photoCell.match(/ลิงก์ Drive:\s*(https:\/\/[^\s|]+)/) ||
+          photoCell.match(/(https:\/\/drive\.google\.com\/drive\/folders\/[^\s|]+)/) ||
+          photoCell.match(/https:\/\/[^\s|]+/);
+        const frontUrlMatch = photoCell.match(/หน้า:\s*(https:\/\/[^\s|]+)/);
+        const rearUrlMatch = photoCell.match(/หลัง:\s*(https:\/\/[^\s|]+)/);
+        const leftUrlMatch = photoCell.match(/ซ้าย:\s*(https:\/\/[^\s|]+)/);
+        const rightUrlMatch = photoCell.match(/ขวา:\s*(https:\/\/[^\s|]+)/);
+
+        const frontDriveUrl = frontUrlMatch?.[1];
+        const rearDriveUrl = rearUrlMatch?.[1];
+        const leftDriveUrl = leftUrlMatch?.[1];
+        const rightDriveUrl = rightUrlMatch?.[1];
+        const folderUrl = folderUrlMatch?.[1] || folderUrlMatch?.[0];
 
         const recordId = (r[17] || '').trim() || `insp-sheet-${vehCode}-${idx + 1}`;
+
+        const hasAnyDriveLinks = Boolean(
+          docUrlMatch?.[0] ||
+            folderUrl ||
+            frontDriveUrl ||
+            rearDriveUrl ||
+            leftDriveUrl ||
+            rightDriveUrl
+        );
 
         inspections.push({
           id: recordId,
@@ -930,23 +970,26 @@ export async function pullAllDataFromGoogleSheets(
           odometerReading: Number(String(r[6] || '').replace(/[^0-9.]/g, '')) || 0,
           vehicleChecklist: checklist,
           photos: {
-            front: '',
-            rear: '',
-            left: '',
-            right: '',
+            front: toDisplayableDriveImageUrl(undefined, frontDriveUrl) || '',
+            rear: toDisplayableDriveImageUrl(undefined, rearDriveUrl) || '',
+            left: toDisplayableDriveImageUrl(undefined, leftDriveUrl) || '',
+            right: toDisplayableDriveImageUrl(undefined, rightDriveUrl) || '',
           },
           summaryNotes,
           overallStatus,
           uploadTimestamp: r[0].trim(),
           createdAt: Date.now() - idx * 1000,
           googleSheetsSyncStatus: 'synced',
-          driveLinks:
-            docUrlMatch || folderUrlMatch
-              ? {
-                  documentUrl: docUrlMatch?.[0],
-                  folderUrl: folderUrlMatch?.[0],
-                }
-              : undefined,
+          driveLinks: hasAnyDriveLinks
+            ? {
+                documentUrl: docUrlMatch?.[0],
+                folderUrl,
+                frontPhotoUrl: frontDriveUrl,
+                rearPhotoUrl: rearDriveUrl,
+                leftPhotoUrl: leftDriveUrl,
+                rightPhotoUrl: rightDriveUrl,
+              }
+            : undefined,
         });
       }
     }

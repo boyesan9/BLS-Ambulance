@@ -104,6 +104,7 @@ import {
 import {
   syncInspectionsFromIndexedDb,
   toDisplayableDriveImageUrl,
+  mergeInspectionRecordMedia,
 } from './services/storage';
 import { getActiveSpreadsheetId, hasNoLoginBridge } from './services/googleBridge';
 import { User } from 'firebase/auth';
@@ -240,9 +241,18 @@ export default function App() {
   // Hydrate inspections from IndexedDB on startup to safeguard full photo history
   useEffect(() => {
     syncInspectionsFromIndexedDb()
-      .then((records) => {
-        if (records && records.length > 0) {
-          setInspections(records);
+      .then((idbRecords) => {
+        if (idbRecords && idbRecords.length > 0) {
+          setInspections((prev) => {
+            if (!prev || prev.length === 0) return idbRecords;
+            const prevMap = new Map(prev.map((r) => [r.id, r]));
+            const merged = idbRecords.map((r) => mergeInspectionRecordMedia(r, prevMap.get(r.id)));
+            const idbSet = new Set(idbRecords.map((r) => r.id));
+            for (const p of prev) {
+              if (!idbSet.has(p.id)) merged.unshift(p);
+            }
+            return merged;
+          });
         }
       })
       .catch((err) => {
@@ -336,7 +346,23 @@ export default function App() {
       (i) => i.id !== 'insp-20261107-001' && i.id !== 'insp-20261106-002'
     );
     const localMap = new Map(existingInspections.map((i) => [i.id, i]));
-    return cleanSheetInspections.map((pi) => {
+    const sheetIds = new Set(cleanSheetInspections.map((i) => i.id));
+
+    const pickSidePhoto = (localVal?: string, sheetVal?: string, driveUrl?: string) => {
+      const isInline = (v?: string) =>
+        Boolean(v && v.startsWith('data:image/') && !v.startsWith('data:image/svg+xml'));
+      if (isInline(localVal)) return localVal as string;
+      if (isInline(sheetVal)) return sheetVal as string;
+      return (
+        toDisplayableDriveImageUrl(localVal, driveUrl) ||
+        toDisplayableDriveImageUrl(sheetVal, driveUrl) ||
+        localVal ||
+        sheetVal ||
+        ''
+      );
+    };
+
+    const reconciled: InspectionRecord[] = cleanSheetInspections.map((pi): InspectionRecord => {
       const local = localMap.get(pi.id);
       const mergedDriveLinks = {
         ...(local?.driveLinks || {}),
@@ -352,33 +378,46 @@ export default function App() {
             ? local.vehicleChecklist
             : pi.vehicleChecklist,
         photos: {
-          front:
-            local?.photos?.front ||
-            toDisplayableDriveImageUrl(undefined, mergedDriveLinks.frontPhotoUrl) ||
-            '',
-          rear:
-            local?.photos?.rear ||
-            toDisplayableDriveImageUrl(undefined, mergedDriveLinks.rearPhotoUrl) ||
-            '',
-          left:
-            local?.photos?.left ||
-            toDisplayableDriveImageUrl(undefined, mergedDriveLinks.leftPhotoUrl) ||
-            '',
-          right:
-            local?.photos?.right ||
-            toDisplayableDriveImageUrl(undefined, mergedDriveLinks.rightPhotoUrl) ||
-            '',
+          front: pickSidePhoto(
+            local?.photos?.front,
+            pi.photos?.front,
+            mergedDriveLinks.frontPhotoUrl
+          ),
+          rear: pickSidePhoto(
+            local?.photos?.rear,
+            pi.photos?.rear,
+            mergedDriveLinks.rearPhotoUrl
+          ),
+          left: pickSidePhoto(
+            local?.photos?.left,
+            pi.photos?.left,
+            mergedDriveLinks.leftPhotoUrl
+          ),
+          right: pickSidePhoto(
+            local?.photos?.right,
+            pi.photos?.right,
+            mergedDriveLinks.rightPhotoUrl
+          ),
         },
         documentAttachment: local?.documentAttachment || pi.documentAttachment,
         driveLinks: Object.keys(mergedDriveLinks).length > 0 ? mergedDriveLinks : undefined,
         createdAt: local?.createdAt || pi.createdAt,
-        googleSheetsSyncStatus: 'synced',
+        googleSheetsSyncStatus: 'synced' as const,
       };
     });
+
+    // Preserve unsynced local records (e.g. captured offline before cloud sync)
+    for (const loc of existingInspections) {
+      if (!sheetIds.has(loc.id) && loc.googleSheetsSyncStatus !== 'synced') {
+        reconciled.unshift(loc);
+      }
+    }
+
+    return reconciled;
   };
 
   // Two-way Sync Back handler from Google Sheets (Single Source of Truth)
-  const handleSyncBackData = (data: {
+  const handleSyncBackData = async (data: {
     vehicles: AmbulanceVehicle[];
     staffList: UserProfile[];
     inspections?: InspectionRecord[];
@@ -415,12 +454,12 @@ export default function App() {
       saveStaff(cleanStaff);
       reconcileCurrentUserWithStaff(cleanStaff);
     }
+    const storedInspections = await syncInspectionsFromIndexedDb();
     if (data.inspections) {
-      const reconciledInspections = reconcileInspectionsList(data.inspections, getStoredInspections());
+      const reconciledInspections = reconcileInspectionsList(data.inspections, storedInspections);
       setInspections(reconciledInspections);
       replaceAllInspections(reconciledInspections);
     } else {
-      const storedInspections = getStoredInspections();
       setInspections(storedInspections);
     }
     if (data.damageRecords) {
@@ -480,9 +519,10 @@ export default function App() {
       const activeToken = token || (await getAccessToken()) || '';
       if (!activeToken && !hasNoLoginBridge()) return;
 
+      const fullInspections = await syncInspectionsFromIndexedDb();
       const spreadsheetId = googleSheetsConfig.spreadsheetId || getActiveSpreadsheetId();
       const payload: MasterDatabasePayload = {
-        inspections: getStoredInspections(),
+        inspections: fullInspections,
         vehicles: getStoredVehicles(),
         staffList: getStoredStaff(),
         damageRecords: getStoredDamageRecords(),
@@ -521,7 +561,7 @@ export default function App() {
       let driveStats = '';
       let resolvedSheetId = googleSheetsConfig.spreadsheetId || getActiveSpreadsheetId();
 
-      let driveInspectionsSnapshot: InspectionRecord[] = getStoredInspections();
+      let driveInspectionsSnapshot: InspectionRecord[] = await syncInspectionsFromIndexedDb();
 
       if (activeToken || bridgeActive) {
         try {
@@ -565,9 +605,19 @@ export default function App() {
               const cleanDriveInspections = driveData.inspections.filter(
                 (i) => i.id !== 'insp-20261107-001' && i.id !== 'insp-20261106-002'
               );
-              driveInspectionsSnapshot = cleanDriveInspections;
-              setInspections(cleanDriveInspections);
-              replaceAllInspections(cleanDriveInspections);
+              const localIdbMap = new Map(driveInspectionsSnapshot.map((i) => [i.id, i]));
+              const mergedDriveInspections = cleanDriveInspections.map((di) =>
+                mergeInspectionRecordMedia(di, localIdbMap.get(di.id))
+              );
+              const driveIds = new Set(cleanDriveInspections.map((i) => i.id));
+              for (const loc of driveInspectionsSnapshot) {
+                if (!driveIds.has(loc.id) && loc.googleSheetsSyncStatus !== 'synced') {
+                  mergedDriveInspections.unshift(loc);
+                }
+              }
+              driveInspectionsSnapshot = mergedDriveInspections;
+              setInspections(mergedDriveInspections);
+              replaceAllInspections(mergedDriveInspections);
             }
             if (driveData.equipmentInspections) {
               setEquipmentInspections(driveData.equipmentInspections);
@@ -1059,9 +1109,10 @@ export default function App() {
 
         // Sync full inspection table 1:1 with Google Drive & App
         try {
+          const allLocal = await syncInspectionsFromIndexedDb();
           const mirroredList = [
             { ...recordToSave, googleSheetsSyncStatus: 'synced' as const },
-            ...getStoredInspections().filter((r) => r.id !== recordToSave.id),
+            ...allLocal.filter((r) => r.id !== recordToSave.id),
           ];
           await syncInspectionsToSheet(spreadsheetId, mirroredList, activeToken);
           recordToSave.googleSheetsSyncStatus = 'synced';
@@ -1072,8 +1123,9 @@ export default function App() {
         }
       }
 
-      const updatedList = saveInspectionRecord(recordToSave);
-      setInspections(updatedList);
+      saveInspectionRecord(recordToSave);
+      const updatedFullList = await syncInspectionsFromIndexedDb();
+      setInspections(updatedFullList);
       const latestVehicles = getStoredVehicles();
       setVehicles(latestVehicles);
 
