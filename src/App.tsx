@@ -52,6 +52,7 @@ import {
 } from './services/storage';
 import { Navbar, AppViewMode } from './components/Navbar';
 import { LoginView } from './components/LoginView';
+import { Footer } from './components/Footer';
 import { InspectionForm } from './components/InspectionForm';
 import { EquipmentChecklistView } from './components/EquipmentChecklistView';
 import { EquipmentRequisitionView } from './components/EquipmentRequisitionView';
@@ -2390,14 +2391,17 @@ export default function App() {
 
   if (!isLoggedIn || !currentUser) {
     return (
-      <>
-        <LoginView
-          onLogin={handleLogin}
-          staffList={staffList}
-          onGoogleLogin={handleGoogleLogin}
-          isGoogleLoading={isGoogleLoading}
-          googleUser={googleUser}
-        />
+      <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 flex flex-col font-sans">
+        <div className="flex-1 flex flex-col justify-center">
+          <LoginView
+            onLogin={handleLogin}
+            staffList={staffList}
+            onGoogleLogin={handleGoogleLogin}
+            isGoogleLoading={isGoogleLoading}
+            googleUser={googleUser}
+          />
+        </div>
+        <Footer />
         {toastNotification && (
           <div className="fixed bottom-5 right-5 z-70 max-w-md animate-in fade-in slide-in-from-bottom-3">
             <div
@@ -2452,7 +2456,7 @@ export default function App() {
             </div>
           </div>
         )}
-      </>
+      </div>
     );
   }
 
@@ -2477,8 +2481,8 @@ export default function App() {
         isSyncing={isSyncingGSheets}
       />
 
-      {/* Main Body with bottom padding for mobile safe area & bottom tab bar */}
-      <main className="mx-auto w-full max-w-7xl flex-1 px-3 sm:px-6 py-5 sm:py-6 pb-28 lg:pb-12">
+      {/* Main Body with responsive spacing */}
+      <main className="mx-auto w-full max-w-7xl flex-1 px-3 sm:px-6 py-5 sm:py-6 pb-10 lg:pb-12">
         {currentView === 'form' && currentUser.role !== 'executive' && (
           <InspectionForm
             currentUser={currentUser}
@@ -2579,6 +2583,8 @@ export default function App() {
           />
         )}
       </main>
+
+      <Footer extraBottomPadding />
 
       {/* Modals */}
       {recordToPrint && (
