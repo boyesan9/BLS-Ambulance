@@ -620,14 +620,20 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
         </div>
       </div>
 
-      <div class="sign-center">
-        <div class="sign-box">
+      <div style="margin-top:16px;">
+        <div style="text-align:left; font-size:12.5px; line-height:1.5;">
           <div style="font-weight:700;">จึงเรียนมาเพื่อโปรดทราบ</div>
-          <div style="height:26px;"></div>
-          <div>ลงชื่อ.....................................................................</div>
-          <div style="font-weight:700; white-space:pre;">(        นายนิยม   สังข์เอียด        )</div>
-          <div>นายกองค์การบริหารส่วนตำบลหงษ์เจริญ</div>
-          <div>วันที่............เดือน........................พ.ศ. .......................</div>
+          <div style="height:22px; border-bottom:1.5px dotted #334155; width:100%;"></div>
+          <div style="height:24px; border-bottom:1.5px dotted #334155; width:100%;"></div>
+        </div>
+        <div class="sign-center" style="margin-top:12px; justify-content:flex-end;">
+          <div class="sign-box" style="width:48%; max-width:none;">
+            <div style="height:26px;"></div>
+            <div>ลงชื่อ.....................................................................</div>
+            <div style="font-weight:700; white-space:pre;">(        นายนิยม   สังข์เอียด        )</div>
+            <div>นายกองค์การบริหารส่วนตำบลหงษ์เจริญ</div>
+            <div>วันที่............เดือน........................พ.ศ. .......................</div>
+          </div>
         </div>
       </div>
     </div>
@@ -1746,14 +1752,22 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
                 </div>
               </div>
 
-              <div className="mt-4 flex justify-center text-slate-950">
-                <div className="w-full max-w-md p-3 text-xs sm:text-[13px] text-center leading-relaxed">
-                  <p className="font-bold">จึงเรียนมาเพื่อโปรดทราบ</p>
-                  <div className="h-9" />
-                  <p>ลงชื่อ.....................................................................</p>
-                  <p className="font-bold mt-1 whitespace-pre">(        นายนิยม   สังข์เอียด        )</p>
-                  <p className="mt-0.5 text-[11px]">นายกองค์การบริหารส่วนตำบลหงษ์เจริญ</p>
-                  <p className="mt-0.5 text-[11px]">วันที่............เดือน........................พ.ศ. .......................</p>
+              <div className="mt-4 text-slate-950">
+                <div className="px-3 text-xs sm:text-[13px] leading-relaxed">
+                  <p className="font-bold text-left">จึงเรียนมาเพื่อโปรดทราบ</p>
+                  <div className="mt-1 space-y-2">
+                    <div className="h-5 w-full border-b-2 border-dotted border-slate-700" />
+                    <div className="h-5 w-full border-b-2 border-dotted border-slate-700" />
+                  </div>
+                </div>
+                <div className="mt-3 flex justify-end">
+                  <div className="w-full sm:w-1/2 p-3 text-xs sm:text-[13px] text-center leading-relaxed">
+                    <div className="h-8" />
+                    <p>ลงชื่อ.....................................................................</p>
+                    <p className="font-bold mt-1 whitespace-pre">(        นายนิยม   สังข์เอียด        )</p>
+                    <p className="mt-0.5 text-[11px]">นายกองค์การบริหารส่วนตำบลหงษ์เจริญ</p>
+                    <p className="mt-0.5 text-[11px]">วันที่............เดือน........................พ.ศ. .......................</p>
+                  </div>
                 </div>
               </div>
             </div>

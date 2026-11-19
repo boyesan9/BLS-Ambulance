@@ -42,6 +42,9 @@ import {
   X,
   Gauge,
   Calendar,
+  KeyRound,
+  Lock,
+  RotateCcw,
 } from 'lucide-react';
 import { ConfirmDeleteModal } from './ConfirmDeleteModal';
 import {
@@ -63,6 +66,7 @@ interface AdminDashboardProps {
   onOpenStaffModal: (staff?: UserProfile) => void;
   onDeleteStaff: (staffId: string) => void;
   onUpdateStaffStatus: (staffId: string, status: UserStatus) => void;
+  onResetStaffPin?: (staffId: string) => void;
   onDeleteInspection: (recordId: string) => void;
   onClearAllInspections: () => void;
   onClearAllSystemData?: (clearFleetAndStaff?: boolean) => void;
@@ -93,6 +97,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onOpenStaffModal,
   onDeleteStaff,
   onUpdateStaffStatus,
+  onResetStaffPin,
   onDeleteInspection,
   onClearAllInspections,
   onClearAllSystemData,
@@ -134,6 +139,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     id: string;
     name: string;
   } | null>(null);
+
+  // Admin Reset PIN confirmation modal state
+  const [resetPinTarget, setResetPinTarget] = useState<UserProfile | null>(null);
 
   // Vehicle KPI calculations
   const totalVehicles = vehicles.length;
@@ -1602,6 +1610,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     <th className="px-4 py-3">ตำแหน่ง / สังกัด</th>
                     <th className="px-4 py-3">เบอร์ติดต่อ / อีเมล</th>
                     <th className="px-4 py-3">ระดับสิทธิ์</th>
+                    {currentUser.role === 'admin' && (
+                      <th className="px-4 py-3">รหัสผ่าน (PIN)</th>
+                    )}
                     <th className="px-4 py-3">สถานะ</th>
                     <th className="px-4 py-3 text-right">การจัดการ</th>
                   </tr>
@@ -1665,6 +1676,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           )}
                         </td>
 
+                        {currentUser.role === 'admin' && (
+                          <td className="px-4 py-3.5">
+                            {staff.role === 'admin' ? (
+                              <span className="text-[11px] text-slate-400">รหัสผู้ดูแลระบบ</span>
+                            ) : staff.pin_code && staff.pin_code.trim() !== '' ? (
+                              <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+                                <Lock className="h-3 w-3" /> ตั้งรหัสแล้ว
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+                                <KeyRound className="h-3 w-3" /> ยังไม่ตั้งรหัส
+                              </span>
+                            )}
+                          </td>
+                        )}
+
                         <td className="px-4 py-3.5">
                           {currentUser.role === 'admin' ? (
                             <select
@@ -1698,6 +1725,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <td className="px-4 py-3.5 text-right">
                           {currentUser.role === 'admin' ? (
                             <div className="flex items-center justify-end gap-1.5">
+                              {staff.role !== 'admin' && onResetStaffPin && (
+                                <button
+                                  type="button"
+                                  disabled={!staff.pin_code || staff.pin_code.trim() === ''}
+                                  onClick={() => setResetPinTarget(staff)}
+                                  className="inline-flex items-center gap-1 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-300 dark:hover:bg-amber-900/50 dark:disabled:border-slate-800 dark:disabled:bg-slate-900 dark:disabled:text-slate-600"
+                                  title={
+                                    staff.pin_code && staff.pin_code.trim() !== ''
+                                      ? 'ล้างค่า pin_code กลับเป็นค่าว่างเพื่อให้เจ้าหน้าที่ตั้งรหัสใหม่'
+                                      : 'บัญชีนี้ยังไม่มีรหัสผ่าน (pin_code ว่างอยู่แล้ว)'
+                                  }
+                                >
+                                  <RotateCcw className="h-3 w-3" /> รีเซ็ตรหัสผ่าน
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => onOpenStaffModal(staff)}
@@ -1728,7 +1770,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     ))
                   ) : (
                     <tr>
-                      <td colSpan={7} className="p-8 text-center text-slate-400">
+                      <td
+                        colSpan={currentUser.role === 'admin' ? 8 : 7}
+                        className="p-8 text-center text-slate-400"
+                      >
                         ไม่พบข้อมูลพนักงานที่ค้นหา
                       </td>
                     </tr>
@@ -1919,6 +1964,76 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         }
         itemName={deleteTarget?.name || ''}
       />
+      {/* Admin Reset Staff PIN Confirmation Modal */}
+      {resetPinTarget && (
+        <div
+          className="fixed inset-0 z-60 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm animate-in fade-in"
+          onClick={() => setResetPinTarget(null)}
+        >
+          <div
+            className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4 dark:border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-100 text-amber-700 dark:bg-amber-950/70 dark:text-amber-300">
+                  <RotateCcw className="h-4 w-4" />
+                </div>
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                  ยืนยันการรีเซ็ตรหัสผ่านเจ้าหน้าที่
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setResetPinTarget(null)}
+                className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-3">
+              <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">
+                คุณต้องการล้างค่ารหัสผ่าน (<code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px] dark:bg-slate-800">pin_code</code>) ของบัญชีต่อไปนี้ให้กลับเป็นค่าว่างใช่หรือไม่?
+              </p>
+              <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-900/60 dark:bg-amber-950/30">
+                <p className="text-xs font-bold text-slate-900 dark:text-white">
+                  {resetPinTarget.name}
+                </p>
+                <p className="text-[11px] text-slate-600 dark:text-slate-400">
+                  รหัสพนักงาน {resetPinTarget.employeeId} · {resetPinTarget.position || 'เจ้าหน้าที่กู้ชีพ'}
+                </p>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                เมื่อเจ้าหน้าที่เข้าสู่ระบบครั้งถัดไป ระบบจะบังคับให้ตั้งรหัสผ่านใหม่ทันที (First-Time Password Setup)
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-slate-100 bg-slate-50/60 px-5 py-3.5 dark:border-slate-800 dark:bg-slate-850/60">
+              <button
+                type="button"
+                onClick={() => setResetPinTarget(null)}
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onResetStaffPin && resetPinTarget) {
+                    onResetStaffPin(resetPinTarget.id);
+                  }
+                  setResetPinTarget(null);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-amber-600 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-amber-500"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                <span>ยืนยันรีเซ็ตรหัสผ่าน</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

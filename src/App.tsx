@@ -924,6 +924,18 @@ export default function App() {
     const syncRes = await loadDataFromDriveBeforeSheets(enrichedUser.role === 'admin');
     const syncedStaff = syncRes?.staffList || getStoredStaff();
 
+    // หากเพิ่งตั้งรหัสผ่านใหม่ในเครื่องแต่ Cloud ยังไม่ได้อัปเดตคอลัมน์ PIN ให้คงค่า pin_code ไว้
+    if (enrichedUser.pin_code && enrichedUser.pin_code.trim() !== '') {
+      const matched = syncedStaff.find((s) => s.id === enrichedUser.id);
+      if (matched && (!matched.pin_code || matched.pin_code.trim() === '')) {
+        const preserved = syncedStaff.map((s) =>
+          s.id === enrichedUser.id ? { ...s, pin_code: enrichedUser.pin_code } : s
+        );
+        setStaffList(preserved);
+        saveStaff(preserved);
+      }
+    }
+
     // ตรวจสอบว่าผู้ที่เข้าสู่ระบบมีรายชื่อในฐานข้อมูลแล้วหรือไม่ หากยังไม่มีให้บันทึกและซิงค์ลง Google Sheets & Drive
     const alreadyExists = syncedStaff.some(
       (s) =>
@@ -1725,6 +1737,103 @@ export default function App() {
     );
   };
 
+  // First-Time Staff PIN/Password Setup handler
+  const handleSetStaffPin = async (
+    staffId: string,
+    newPin: string
+  ): Promise<UserProfile | undefined> => {
+    const cleanPin = newPin.trim();
+    const list = staffList.map((s) => (s.id === staffId ? { ...s, pin_code: cleanPin } : s));
+    const cleanList = deduplicateStaff(list);
+    const updatedTarget = cleanList.find((s) => s.id === staffId);
+
+    setStaffList(cleanList);
+    saveStaff(cleanList);
+
+    if (currentUser && currentUser.id === staffId && updatedTarget) {
+      setCurrentUserState(updatedTarget);
+      setCurrentUser(updatedTarget);
+    }
+
+    const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+    const activeToken = token || '';
+    if ((activeToken || bridgeActive) && spreadsheetId) {
+      try {
+        await syncStaffToSheet(spreadsheetId, cleanList, activeToken);
+        await saveCurrentDatabaseSnapshotToDrive(activeToken);
+      } catch (err: any) {
+        console.warn('Set staff PIN cloud sync warning:', err?.message || err);
+      }
+    }
+
+    if (updatedTarget) {
+      logSystemActivityAndSyncSheets(
+        'ตั้งรหัสผ่านครั้งแรก',
+        'เจ้าหน้าที่',
+        `${updatedTarget.name} (${updatedTarget.employeeId})`,
+        'เจ้าหน้าที่ตั้งรหัสผ่าน (PIN/Password) สำหรับยืนยันตัวตนครั้งแรกเรียบร้อยแล้ว'
+      );
+      setToastNotification({
+        type: 'success',
+        title: 'ตั้งรหัสผ่านเรียบร้อยแล้ว',
+        message: `บันทึกรหัสผ่านสำหรับบัญชี ${updatedTarget.name} และเข้าสู่ระบบเรียบร้อยแล้ว`,
+      });
+    }
+
+    return updatedTarget;
+  };
+
+  // Admin Reset Staff PIN handler (clears pin_code to "")
+  const handleResetStaffPin = async (staffId: string) => {
+    if (currentUser?.role !== 'admin') return;
+    const targetStaff = staffList.find((s) => s.id === staffId);
+    const list = staffList.map((s) => (s.id === staffId ? { ...s, pin_code: '' } : s));
+    const cleanList = deduplicateStaff(list);
+
+    setStaffList(cleanList);
+    saveStaff(cleanList);
+
+    if (currentUser && currentUser.id === staffId) {
+      const updatedSelf = { ...currentUser, pin_code: '' };
+      setCurrentUserState(updatedSelf);
+      setCurrentUser(updatedSelf);
+    }
+
+    const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
+    const activeToken = token || '';
+    const canWriteCloud = Boolean((activeToken || bridgeActive) && spreadsheetId);
+
+    if (canWriteCloud && spreadsheetId) {
+      try {
+        await syncStaffToSheet(spreadsheetId, cleanList, activeToken);
+        await saveCurrentDatabaseSnapshotToDrive(activeToken);
+      } catch (err: any) {
+        console.warn('Reset staff PIN cloud sync warning:', err?.message || err);
+        setToastNotification({
+          type: 'error',
+          title: 'รีเซ็ตในเครื่องแล้ว แต่ซิงค์ Cloud ขัดข้อง',
+          message: `ล้างค่า pin_code ของ ${targetStaff?.name || staffId} แล้ว แต่ไม่สามารถซิงค์ Google Sheets ได้`,
+        });
+        return;
+      }
+    }
+
+    logSystemActivityAndSyncSheets(
+      'รีเซ็ตรหัสผ่านเจ้าหน้าที่',
+      'เจ้าหน้าที่',
+      targetStaff ? `${targetStaff.name} (${targetStaff.employeeId})` : staffId,
+      'ผู้ดูแลระบบรีเซ็ตรหัสผ่าน (ล้างค่า pin_code กลับเป็นค่าว่าง) เพื่อให้เจ้าหน้าที่ตั้งรหัสใหม่ในการเข้าสู่ระบบครั้งถัดไป'
+    );
+
+    setToastNotification({
+      type: 'success',
+      title: 'รีเซ็ตรหัสผ่านสำเร็จ',
+      message: targetStaff
+        ? `ล้างค่ารหัสผ่านของ ${targetStaff.name} (${targetStaff.employeeId}) กลับเป็นค่าว่างแล้ว เจ้าหน้าที่จะต้องตั้งรหัสผ่านใหม่ในครั้งถัดไป`
+        : 'ล้างค่ารหัสผ่านเจ้าหน้าที่กลับเป็นค่าว่างเรียบร้อยแล้ว',
+    });
+  };
+
   // Damage Records handlers with Google Drive & Sheets Auto-Sync
   const handleSaveDamage = async (item: VehicleDamageItem) => {
     let itemToSave = { ...item };
@@ -2396,6 +2505,7 @@ export default function App() {
           <LoginView
             onLogin={handleLogin}
             staffList={staffList}
+            onSetStaffPin={handleSetStaffPin}
             onGoogleLogin={handleGoogleLogin}
             isGoogleLoading={isGoogleLoading}
             googleUser={googleUser}
@@ -2538,6 +2648,7 @@ export default function App() {
             }}
             onDeleteStaff={handleDeleteStaff}
             onUpdateStaffStatus={handleUpdateStaffStatus}
+            onResetStaffPin={handleResetStaffPin}
             onDeleteInspection={handleDeleteInspection}
             onClearAllInspections={handleClearAllInspections}
             onResetDemoData={handleResetDemoData}

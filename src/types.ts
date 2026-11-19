@@ -13,6 +13,7 @@ export interface UserProfile {
   status?: UserStatus;
   email?: string;
   avatarUrl?: string;
+  pin_code?: string;
 }
 
 export type VehicleStatus = 'available' | 'issue_found' | 'maintenance';

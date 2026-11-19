@@ -1,13 +1,15 @@
 import React, { useState } from 'react';
 import { UserProfile, UserRole } from '../types';
-import { Shield, User, ArrowRight, UserCheck, Phone, Lock, Briefcase } from 'lucide-react';
+import { Shield, User, ArrowRight, UserCheck, Phone, Lock, Briefcase, KeyRound } from 'lucide-react';
 import { AdminAuthModal } from './AdminAuthModal';
+import { StaffPinAuthModal } from './StaffPinAuthModal';
 import { User as FirebaseUser } from 'firebase/auth';
 import { RedirectLoginIntent } from '../services/firebaseAuth';
 
 interface LoginViewProps {
   onLogin: (user: UserProfile) => void;
   staffList: UserProfile[];
+  onSetStaffPin?: (staffId: string, newPin: string) => Promise<UserProfile | undefined>;
   onGoogleLogin?: (
     intent?: Omit<RedirectLoginIntent, 'timestamp'>,
     forcePopup?: boolean
@@ -19,6 +21,7 @@ interface LoginViewProps {
 export const LoginView: React.FC<LoginViewProps> = ({
   onLogin,
   staffList,
+  onSetStaffPin,
   onGoogleLogin,
   isGoogleLoading = false,
   googleUser = null,
@@ -32,6 +35,9 @@ export const LoginView: React.FC<LoginViewProps> = ({
   // Admin Auth Modal state
   const [adminAuthModalOpen, setAdminAuthModalOpen] = useState(false);
   const [pendingAdminUser, setPendingAdminUser] = useState<UserProfile | null>(null);
+
+  // Staff PIN / Password Auth Modal state
+  const [pendingPinStaff, setPendingPinStaff] = useState<UserProfile | null>(null);
 
   const handleCustomLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -75,6 +81,8 @@ export const LoginView: React.FC<LoginViewProps> = ({
     if (staff.role === 'admin') {
       setPendingAdminUser(staff);
       setAdminAuthModalOpen(true);
+    } else if (staff.role === 'staff' || (staff.pin_code && staff.pin_code.trim() !== '')) {
+      setPendingPinStaff(staff);
     } else {
       onLogin(staff);
     }
@@ -251,15 +259,30 @@ export const LoginView: React.FC<LoginViewProps> = ({
                           </div>
 
                           <div className="text-right">
-                            <span
-                              className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-                                staff.status === 'on_leave'
-                                  ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
-                                  : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
-                              }`}
-                            >
-                              {staff.status === 'on_leave' ? 'พักเวร' : 'พร้อมปฏิบัติงาน'}
-                            </span>
+                            <div className="flex flex-wrap items-center justify-end gap-1">
+                              {staff.role === 'staff' && (
+                                staff.pin_code && staff.pin_code.trim() !== '' ? (
+                                  <span className="inline-flex items-center gap-0.5 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700 dark:bg-sky-950/70 dark:text-sky-300">
+                                    <Lock className="h-2.5 w-2.5" />
+                                    <span>มีรหัสผ่าน</span>
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-0.5 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-950/70 dark:text-amber-300">
+                                    <KeyRound className="h-2.5 w-2.5" />
+                                    <span>ตั้งรหัสครั้งแรก</span>
+                                  </span>
+                                )
+                              )}
+                              <span
+                                className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                                  staff.status === 'on_leave'
+                                    ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                                    : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                                }`}
+                              >
+                                {staff.status === 'on_leave' ? 'พักเวร' : 'พร้อมปฏิบัติงาน'}
+                              </span>
+                            </div>
                             <div className="mt-1 flex items-center justify-end gap-1 text-[10px] text-slate-400">
                               <Phone className="h-2.5 w-2.5" />
                               <span>{staff.phone || '-'}</span>
@@ -430,6 +453,23 @@ export const LoginView: React.FC<LoginViewProps> = ({
           targetUser={pendingAdminUser}
         />
       )}
+      {/* Staff PIN / Password Auth & First-Time Setup Modal */}
+      <StaffPinAuthModal
+        isOpen={Boolean(pendingPinStaff)}
+        staff={pendingPinStaff}
+        onClose={() => setPendingPinStaff(null)}
+        onVerifySuccess={(verifiedStaff) => {
+          setPendingPinStaff(null);
+          onLogin(verifiedStaff);
+        }}
+        onFirstTimeSetup={async (targetStaff, newPin) => {
+          const updatedStaff = onSetStaffPin
+            ? (await onSetStaffPin(targetStaff.id, newPin)) || { ...targetStaff, pin_code: newPin }
+            : { ...targetStaff, pin_code: newPin };
+          setPendingPinStaff(null);
+          onLogin(updatedStaff);
+        }}
+      />
     </div>
   );
 };

@@ -73,6 +73,7 @@ export const StaffModal: React.FC<StaffModalProps> = ({
       status,
       email: staffToEdit?.email || '',
       avatarUrl: staffToEdit?.avatarUrl || '',
+      pin_code: staffToEdit?.pin_code ?? '',
     };
 
     onSave(staff);

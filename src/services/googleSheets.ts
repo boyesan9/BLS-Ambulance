@@ -104,6 +104,7 @@ export const STAFF_HEADERS = [
   'อีเมล',
   'รหัสอ้างอิง (ID)',
   'อัปเดตล่าสุด',
+  'รหัสผ่าน (PIN)',
 ];
 
 export const AUDIT_LOG_HEADERS = [
@@ -852,6 +853,7 @@ export async function syncStaffToSheet(
       s.email || '-',
       s.id,
       nowStr,
+      s.pin_code ? `'${s.pin_code}` : '',
     ]);
     await callAppsScriptBridge('syncTab', {
       spreadsheetId,
@@ -875,17 +877,18 @@ export async function syncStaffToSheet(
     s.email || '-',
     s.id,
     nowStr,
+    s.pin_code || '',
   ]);
 
   // Pad empty rows to overwrite if staff count decreased
-  const paddedRows = [...rows];
-  while (paddedRows.length < 50) {
-    paddedRows.push(new Array(10).fill(''));
+  const paddedRows = [STAFF_HEADERS, ...rows];
+  while (paddedRows.length < 51) {
+    paddedRows.push(new Array(11).fill(''));
   }
 
   const putUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
     STAFF_SHEET_TITLE
-  )}!A2:J52?valueInputOption=USER_ENTERED`;
+  )}!A1:K52?valueInputOption=RAW`;
 
   const response = await fetch(putUrl, {
     method: 'PUT',
@@ -1053,7 +1056,7 @@ export async function pullAllDataFromGoogleSheets(
   }
 
   // 2. Pull Staff
-  const staffRows = await fetchTabRows(STAFF_SHEET_TITLE, 'A2:J100');
+  const staffRows = await fetchTabRows(STAFF_SHEET_TITLE, 'A2:K100');
   const staffList: UserProfile[] = [];
   if (staffRows.length > 0) {
     const rows: string[][] = staffRows;
@@ -1073,6 +1076,8 @@ export async function pullAllDataFromGoogleSheets(
           ? 'inactive'
           : 'active';
 
+        const rawPin = (r[10] || '').trim().replace(/^'/, '');
+
         staffList.push({
           id: (r[8] || '').trim() || `user-${r[0].trim()}`,
           employeeId: r[0].trim(),
@@ -1083,6 +1088,7 @@ export async function pullAllDataFromGoogleSheets(
           phone: (r[5] || '').trim() || '-',
           status,
           email: (r[7] || '').trim() === '-' ? '' : (r[7] || '').trim(),
+          pin_code: rawPin,
         });
       }
     }
