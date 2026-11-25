@@ -846,6 +846,8 @@ export default function App() {
 
             if (pulled.equipmentInspections.length > 0 || (driveLoaded && (activeToken || bridgeActive))) {
               const currentEq = getStoredEquipmentInspections();
+              const localEqMap = new Map(currentEq.map((e) => [e.id, e]));
+              const exactSet = new Set(pulled.exactEquipmentItemIds || []);
               const reconciledEq = reconcileEquipmentInspectionsList(
                 pulled.equipmentInspections,
                 currentEq,
@@ -853,6 +855,23 @@ export default function App() {
               );
               setEquipmentInspections(reconciledEq);
               saveAllEquipmentInspections(reconciledEq);
+
+              // Auto-heal legacy Google Sheets rows that lack Column L JSON / Tab 10 itemized history
+              // whenever Drive or local storage holds real counted quantities
+              const needsItemizedBackfill =
+                (activeToken || bridgeActive) &&
+                reconciledEq.length > 0 &&
+                reconciledEq.some((rec) => {
+                  if (exactSet.has(rec.id)) return false;
+                  const localRec = localEqMap.get(rec.id);
+                  return Boolean(localRec?.items?.some((item) => item.availableQty > 0));
+                });
+
+              if (needsItemizedBackfill) {
+                syncEquipmentInspectionsToSheet(resolvedSheetId, reconciledEq, activeToken).catch(
+                  (err) => console.warn('Equipment itemized history backfill warning:', err)
+                );
+              }
             }
 
             if (pulled.equipmentRequisitions.length > 0 || (driveLoaded && (activeToken || bridgeActive))) {

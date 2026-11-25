@@ -38,6 +38,7 @@ export const AUDIT_LOG_SHEET_TITLE = 'บันทึกกิจกรรมร
 export const DAMAGE_SHEET_TITLE = 'รอยรอบตัวรถ_BLS';
 export const FUEL_SHEET_TITLE = 'ประวัติการเติมน้ำมัน_BLS';
 export const EQUIPMENT_SHEET_TITLE = 'ตรวจความพร้อมอุปกรณ์_BLS';
+export const EQUIPMENT_HISTORY_SHEET_TITLE = 'ประวัติจำนวนอุปกรณ์_BLS';
 export const REQUISITION_SHEET_TITLE = 'เบิกอุปกรณ์_BLS';
 
 export const INSPECTION_HEADERS = [
@@ -177,6 +178,24 @@ export const EQUIPMENT_HEADERS = [
   'ข้อมูลรายการอุปกรณ์ (JSON)',
 ];
 
+export const EQUIPMENT_HISTORY_HEADERS = [
+  'วันที่ตรวจ (พ.ศ.)',
+  'ชุดปฏิบัติการ',
+  'รหัสรถ/ทะเบียน',
+  'ผู้ตรวจเช็ค',
+  'หมวดอุปกรณ์',
+  'รหัสรายการ',
+  'ชื่อรายการอุปกรณ์',
+  'เกณฑ์ขั้นต่ำ',
+  'จำนวนที่มีจริง',
+  'หน่วย',
+  'สถานะ',
+  'หมายเหตุรายการ',
+  'บันทึกเวลาในระบบ',
+  'รหัสอ้างอิงการตรวจ (ID)',
+  'รหัสอุปกรณ์ (Item ID)',
+];
+
 export const REQUISITION_HEADERS = [
   'เลขที่ใบเบิก',
   'วันที่ขอเบิก (พ.ศ.)',
@@ -210,6 +229,7 @@ export async function ensureAllSpreadsheetTabs(
     { title: DAMAGE_SHEET_TITLE, headers: DAMAGE_HEADERS },
     { title: FUEL_SHEET_TITLE, headers: FUEL_HEADERS },
     { title: EQUIPMENT_SHEET_TITLE, headers: EQUIPMENT_HEADERS },
+    { title: EQUIPMENT_HISTORY_SHEET_TITLE, headers: EQUIPMENT_HISTORY_HEADERS },
     { title: REQUISITION_SHEET_TITLE, headers: REQUISITION_HEADERS },
   ];
 
@@ -290,6 +310,7 @@ export async function createInspectionSpreadsheet(
     { title: DAMAGE_SHEET_TITLE, headers: DAMAGE_HEADERS },
     { title: FUEL_SHEET_TITLE, headers: FUEL_HEADERS },
     { title: EQUIPMENT_SHEET_TITLE, headers: EQUIPMENT_HEADERS },
+    { title: EQUIPMENT_HISTORY_SHEET_TITLE, headers: EQUIPMENT_HISTORY_HEADERS },
     { title: REQUISITION_SHEET_TITLE, headers: REQUISITION_HEADERS },
   ];
 
@@ -1009,6 +1030,7 @@ export async function pullAllDataFromGoogleSheets(
             DAMAGE_SHEET_TITLE,
             FUEL_SHEET_TITLE,
             EQUIPMENT_SHEET_TITLE,
+            EQUIPMENT_HISTORY_SHEET_TITLE,
             REQUISITION_SHEET_TITLE,
           ],
         });
@@ -1355,10 +1377,12 @@ export async function pullAllDataFromGoogleSheets(
     }
   }
 
-  // 6. Pull Equipment Inspections (Columns A:L including serialized item-level JSON in Col L)
+  // 6. Pull Equipment Inspections (Tab 7 A:L + Tab 10 itemized history rows)
   const eqRows = await fetchTabRows(EQUIPMENT_SHEET_TITLE, 'A2:L500');
+  const eqHistoryRows = await fetchTabRows(EQUIPMENT_HISTORY_SHEET_TITLE, 'A2:O5000');
+  const eqHistoryMap = parseEquipmentHistoryMap(eqHistoryRows);
   const { records: equipmentInspections, exactIds: exactEquipmentItemIds } =
-    parseEquipmentSheetRows(eqRows, vehicles, pulledAt);
+    parseEquipmentSheetRows(eqRows, vehicles, pulledAt, eqHistoryMap);
 
   // 7. Pull Equipment Requisitions
   const reqRows = await fetchTabRows(REQUISITION_SHEET_TITLE, 'A2:N500');
@@ -1844,10 +1868,79 @@ function parseEquipmentCreatedAt(id: string, fallbackIdx: number): number {
   return Date.now() - fallbackIdx * 1000;
 }
 
+type ParsedHistoryItemEntry = {
+  availableQty: number;
+  conditionStatus: EquipmentConditionStatus;
+  notes: string;
+};
+
+/**
+ * Parse rows from Tab 10 (ประวัติจำนวนอุปกรณ์_BLS) into a lookup Map<recordId, Map<itemIdOrKey, entry>>
+ */
+export function parseEquipmentHistoryMap(
+  historyRows: string[][]
+): Map<string, Map<string, ParsedHistoryItemEntry>> {
+  const byRecord = new Map<string, Map<string, ParsedHistoryItemEntry>>();
+  if (!Array.isArray(historyRows) || historyRows.length === 0) return byRecord;
+
+  for (const r of historyRows) {
+    if (!r || !r[13]) continue;
+    const recordId = String(r[13]).trim();
+    if (!recordId) continue;
+
+    const itemId = String(r[14] || '').trim();
+    const fallbackKey = `${String(r[5] || '').trim()}|${String(r[6] || '').trim()}`;
+    const qty = Math.max(0, Math.floor(Number(String(r[8] || '0').replace(/[^0-9.-]/g, '')) || 0));
+    const statusText = String(r[10] || '').trim();
+    const conditionStatus: EquipmentConditionStatus = statusText.includes('ชำรุด')
+      ? 'damaged'
+      : statusText.includes('ไม่ครบ')
+      ? 'incomplete'
+      : 'ready';
+    const rawNote = String(r[11] || '').trim();
+    const notes = rawNote === '-' ? '' : rawNote;
+
+    let itemMap = byRecord.get(recordId);
+    if (!itemMap) {
+      itemMap = new Map<string, ParsedHistoryItemEntry>();
+      byRecord.set(recordId, itemMap);
+    }
+    const entry: ParsedHistoryItemEntry = { availableQty: qty, conditionStatus, notes };
+    if (itemId) itemMap.set(itemId, entry);
+    if (fallbackKey !== '|') itemMap.set(fallbackKey, entry);
+  }
+
+  return byRecord;
+}
+
+function hydrateItemsFromHistoryMap(
+  itemMap: Map<string, ParsedHistoryItemEntry>
+): EquipmentCheckItem[] {
+  return EQUIPMENT_TEMPLATE_ITEMS.map((tpl) => {
+    const matched =
+      itemMap.get(tpl.id) || itemMap.get(`${tpl.itemCode}|${tpl.name}`);
+    if (!matched) {
+      return {
+        ...tpl,
+        availableQty: 0,
+        conditionStatus: tpl.minCount === null ? 'ready' : 'incomplete',
+        notes: '',
+      };
+    }
+    return {
+      ...tpl,
+      availableQty: matched.availableQty,
+      conditionStatus: matched.conditionStatus,
+      notes: matched.notes,
+    };
+  });
+}
+
 export function parseEquipmentSheetRows(
   eqRows: string[][],
   vehicles: AmbulanceVehicle[],
-  pulledAt = new Date().toLocaleString('th-TH')
+  pulledAt = new Date().toLocaleString('th-TH'),
+  historyByRecordId?: Map<string, Map<string, ParsedHistoryItemEntry>>
 ): { records: EquipmentInspectionRecord[]; exactIds: string[] } {
   const equipmentInspections: EquipmentInspectionRecord[] = [];
   const exactIds: string[] = [];
@@ -1887,6 +1980,7 @@ export function parseEquipmentSheetRows(
       const dateMatch = dateFormatted.match(/(\d+)\s+([^\s]+)\s+(\d+)/);
 
       const exactParsed = parseSerializedEquipmentItems(r[11] || '');
+      const historyItemMap = historyByRecordId?.get(id);
       let items: EquipmentCheckItem[];
       let summaryNotes: string;
       let requiredPassedCount = fallbackPassed;
@@ -1896,6 +1990,15 @@ export function parseEquipmentSheetRows(
       if (exactParsed) {
         items = exactParsed.items;
         summaryNotes = exactParsed.summaryNotes;
+        const computed = computeEquipmentMetricsFromItems(items);
+        requiredPassedCount = computed.requiredPassedCount;
+        requiredTotalCount = computed.requiredTotalCount;
+        overallStatus = computed.overallStatus;
+        exactIds.push(id);
+      } else if (historyItemMap && historyItemMap.size > 0) {
+        items = hydrateItemsFromHistoryMap(historyItemMap);
+        const legacyNotes = reconstructLegacyEquipmentItems(r[8] || '', fallbackPassed, fallbackStatus);
+        summaryNotes = legacyNotes.summaryNotes;
         const computed = computeEquipmentMetricsFromItems(items);
         requiredPassedCount = computed.requiredPassedCount;
         requiredTotalCount = computed.requiredTotalCount;
@@ -1938,8 +2041,8 @@ export function parseEquipmentSheetRows(
 }
 
 /**
- * Lightweight pull of ONLY Tab 7 (ตรวจความพร้อมอุปกรณ์_BLS) so multi-device saves
- * can safely merge with latest cloud records before syncing without overwriting other devices.
+ * Lightweight pull of Tab 7 (ตรวจความพร้อมอุปกรณ์_BLS) + Tab 10 (ประวัติจำนวนอุปกรณ์_BLS)
+ * so multi-device saves can safely merge with latest cloud records without overwriting other devices.
  */
 export async function pullEquipmentInspectionsFromSheet(
   spreadsheetId: string,
@@ -1947,34 +2050,96 @@ export async function pullEquipmentInspectionsFromSheet(
   vehicles: AmbulanceVehicle[] = []
 ): Promise<{ records: EquipmentInspectionRecord[]; exactIds: string[] }> {
   let eqRows: string[][] = [];
+  let eqHistoryRows: string[][] = [];
+
   if (accessToken) {
-    const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
-      EQUIPMENT_SHEET_TITLE
-    )}!A2:L500`;
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!res.ok) {
-      throw new Error(`ไม่สามารถดึงข้อมูลอุปกรณ์จาก Google Sheets ได้ (${res.status})`);
+    const [eqRes, histRes] = await Promise.all([
+      fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+          EQUIPMENT_SHEET_TITLE
+        )}!A2:L500`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      ),
+      fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+          EQUIPMENT_HISTORY_SHEET_TITLE
+        )}!A2:O5000`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      ).catch(() => null),
+    ]);
+    if (!eqRes.ok) {
+      throw new Error(`ไม่สามารถดึงข้อมูลอุปกรณ์จาก Google Sheets ได้ (${eqRes.status})`);
     }
-    const data = await res.json();
-    eqRows = Array.isArray(data.values) ? data.values : [];
+    const eqData = await eqRes.json();
+    eqRows = Array.isArray(eqData.values) ? eqData.values : [];
+    if (histRes && histRes.ok) {
+      const histData = await histRes.json();
+      eqHistoryRows = Array.isArray(histData.values) ? histData.values : [];
+    }
   } else if (getActiveAppsScriptUrl()) {
     const batchRes = await callAppsScriptBridge<{ ok: boolean; tabs: Record<string, string[][]> }>(
       'readAllTabs',
       {
         spreadsheetId,
-        sheetTitles: [EQUIPMENT_SHEET_TITLE],
+        sheetTitles: [EQUIPMENT_SHEET_TITLE, EQUIPMENT_HISTORY_SHEET_TITLE],
       }
     );
     eqRows = Array.isArray(batchRes?.tabs?.[EQUIPMENT_SHEET_TITLE])
       ? batchRes.tabs[EQUIPMENT_SHEET_TITLE]
       : [];
+    eqHistoryRows = Array.isArray(batchRes?.tabs?.[EQUIPMENT_HISTORY_SHEET_TITLE])
+      ? batchRes.tabs[EQUIPMENT_HISTORY_SHEET_TITLE]
+      : [];
   } else {
-    eqRows = await readSheetValuesWithoutLogin(spreadsheetId, EQUIPMENT_SHEET_TITLE, 'A2:L500');
+    [eqRows, eqHistoryRows] = await Promise.all([
+      readSheetValuesWithoutLogin(spreadsheetId, EQUIPMENT_SHEET_TITLE, 'A2:L500'),
+      readSheetValuesWithoutLogin(spreadsheetId, EQUIPMENT_HISTORY_SHEET_TITLE, 'A2:O5000'),
+    ]);
   }
 
-  return parseEquipmentSheetRows(eqRows, vehicles);
+  const historyMap = parseEquipmentHistoryMap(eqHistoryRows);
+  return parseEquipmentSheetRows(eqRows, vehicles, undefined, historyMap);
+}
+
+/**
+ * Format all items of equipment inspections into itemized daily history rows (Tab 10: ประวัติจำนวนอุปกรณ์_BLS)
+ */
+export function formatEquipmentHistoryRows(
+  records: EquipmentInspectionRecord[]
+): (string | number)[][] {
+  const rows: (string | number)[][] = [];
+  for (const record of records) {
+    const vehLabel = record.vehicleCode
+      ? `${record.vehicleCode}${record.plateNumber ? ` / ${record.plateNumber}` : ''}`
+      : '-';
+    for (const item of record.items || []) {
+      const statusLabel =
+        item.conditionStatus === 'damaged'
+          ? 'ชำรุด'
+          : item.conditionStatus === 'incomplete' ||
+            (item.minCount !== null && item.availableQty < item.minCount)
+          ? 'ไม่ครบ'
+          : 'พร้อม';
+      rows.push([
+        record.inspectDateFormatted,
+        record.teamLabel,
+        vehLabel,
+        record.inspectorName,
+        item.categoryTitle,
+        item.itemCode,
+        item.name,
+        item.minRequirementLabel,
+        item.availableQty,
+        item.unit,
+        statusLabel,
+        item.notes || '-',
+        record.uploadTimestamp,
+        record.id,
+        item.id,
+      ]);
+    }
+  }
+  return rows;
 }
 
 /**
@@ -2031,6 +2196,60 @@ export function formatEquipmentRecordForSheet(
   ];
 }
 
+export async function syncEquipmentHistoryToSheet(
+  spreadsheetId: string,
+  records: EquipmentInspectionRecord[],
+  accessToken: string
+): Promise<void> {
+  const historyRows = formatEquipmentHistoryRows(records);
+
+  if (!accessToken && getActiveAppsScriptUrl()) {
+    await callAppsScriptBridge('syncTab', {
+      spreadsheetId,
+      sheetTitle: EQUIPMENT_HISTORY_SHEET_TITLE,
+      headers: EQUIPMENT_HISTORY_HEADERS,
+      rows: historyRows,
+    });
+    return;
+  }
+
+  await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
+
+  const clearUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+    EQUIPMENT_HISTORY_SHEET_TITLE
+  )}!A2:O5000:clear`;
+
+  await fetch(clearUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+  });
+
+  const allRows = [EQUIPMENT_HISTORY_HEADERS, ...historyRows];
+  const putUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+    EQUIPMENT_HISTORY_SHEET_TITLE
+  )}!A1:O${allRows.length}?valueInputOption=RAW`;
+
+  const response = await fetch(putUrl, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ values: allRows }),
+  });
+
+  if (!response.ok) {
+    const errorJson = await response.json().catch(() => ({}));
+    throw new Error(
+      errorJson.error?.message ||
+        `เกิดข้อผิดพลาดในการอัปเดตประวัติจำนวนอุปกรณ์รายวันลง Google Sheets (${response.status})`
+    );
+  }
+}
+
 export async function appendEquipmentInspectionToSheet(
   spreadsheetId: string,
   record: EquipmentInspectionRecord,
@@ -2067,6 +2286,22 @@ export async function appendEquipmentInspectionToSheet(
     throw new Error(errorJson.error?.message || `เกิดข้อผิดพลาดในการบันทึกตรวจอุปกรณ์ลง Google Sheets (${response.status})`);
   }
 
+  // Also append itemized daily quantities to Tab 10 (best-effort)
+  const itemRows = formatEquipmentHistoryRows([record]);
+  if (itemRows.length > 0) {
+    const appendHistUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+      EQUIPMENT_HISTORY_SHEET_TITLE
+    )}!A:O:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
+    await fetch(appendHistUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ values: itemRows }),
+    }).catch(console.warn);
+  }
+
   return { success: true };
 }
 
@@ -2082,6 +2317,8 @@ export async function syncEquipmentInspectionsToSheet(
       headers: EQUIPMENT_HEADERS,
       rows: records.map((r) => formatEquipmentRecordForSheet(r, true)),
     });
+    // Also sync itemized daily history tab (Tab 10)
+    await syncEquipmentHistoryToSheet(spreadsheetId, records, accessToken).catch(console.warn);
     return;
   }
 
@@ -2117,6 +2354,9 @@ export async function syncEquipmentInspectionsToSheet(
     const errorJson = await response.json().catch(() => ({}));
     throw new Error(errorJson.error?.message || `เกิดข้อผิดพลาดในการอัปเดตตารางตรวจอุปกรณ์ลง Google Sheets (${response.status})`);
   }
+
+  // Also sync itemized daily history tab (Tab 10: ประวัติจำนวนอุปกรณ์_BLS)
+  await syncEquipmentHistoryToSheet(spreadsheetId, records, accessToken).catch(console.warn);
 }
 
 /**

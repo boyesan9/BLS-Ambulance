@@ -505,7 +505,7 @@ export const GoogleSheetsModal: React.FC<GoogleSheetsModalProps> = ({
 
       setStatusMessage({
         type: 'success',
-        text: `ซิงค์ข้อมูลลง Google Sheets & โฟลเดอร์ Drive ครบถ้วนทั้ง 9 แท็บ (ตรวจสภาพ ${count}, รูปถ่าย 4 ด้าน ${count}, รถยนต์ส่วนกลาง (รถกู้ชีพ) ${vehicles.length}, เจ้าหน้าที่ ${staffList.length}, รอยรอบคัน ${currentDamage.length}, น้ำมัน ${currentFuel.length}, อุปกรณ์ BLS ${currentEquipment.length}, เบิกอุปกรณ์ ${currentRequisitions.length})!`,
+        text: `ซิงค์ข้อมูลลง Google Sheets & โฟลเดอร์ Drive ครบถ้วนทั้ง 10 แท็บ (ตรวจสภาพ ${count}, รูปถ่าย 4 ด้าน ${count}, รถยนต์ส่วนกลาง (รถกู้ชีพ) ${vehicles.length}, เจ้าหน้าที่ ${staffList.length}, รอยรอบคัน ${currentDamage.length}, น้ำมัน ${currentFuel.length}, อุปกรณ์ BLS ${currentEquipment.length} + ประวัติจำนวนรายวัน, เบิกอุปกรณ์ ${currentRequisitions.length})!`,
       });
     } catch (err: any) {
       setStatusMessage({

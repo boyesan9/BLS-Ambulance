@@ -10,6 +10,7 @@ import {
 import {
   ORGANIZATION_NAME,
   THAI_MONTHS,
+  EQUIPMENT_TEMPLATE_ITEMS,
   createFreshEquipmentChecklist,
   getDefaultThaiDateParts,
 } from '../data/equipmentChecklist';
@@ -36,6 +37,8 @@ import {
   Save,
   FileDown,
   RefreshCw,
+  Table2,
+  Download,
 } from 'lucide-react';
 
 interface EquipmentChecklistViewProps {
@@ -62,12 +65,12 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
   const isExecutive = currentUser.role === 'executive';
   const defaultDate = useMemo(() => getDefaultThaiDateParts(), []);
 
-  const [activeTab, setActiveTab] = useState<'form' | 'history'>(() =>
+  const [activeTab, setActiveTab] = useState<'form' | 'history' | 'report'>(() =>
     currentUser.role === 'executive' ? 'history' : 'form'
   );
 
   React.useEffect(() => {
-    if (isExecutive && activeTab !== 'history') {
+    if (isExecutive && activeTab === 'form') {
       setActiveTab('history');
     }
   }, [isExecutive, activeTab]);
@@ -81,8 +84,12 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
   const [items, setItems] = useState<EquipmentCheckItem[]>(() => createFreshEquipmentChecklist(false));
   const [categoryFilter, setCategoryFilter] = useState<number | 'all'>('all');
 
-  // History & Modals state
+  // History, Matrix Report & Modals state
   const [historyTeamFilter, setHistoryTeamFilter] = useState<'all' | EquipmentTeamType>('all');
+  const [historyMonthFilter, setHistoryMonthFilter] = useState<string>('all');
+  const [historyYearFilter, setHistoryYearFilter] = useState<string>('all');
+  const [reportCategoryFilter, setReportCategoryFilter] = useState<number | 'all'>('all');
+  const [reportItemSearch, setReportItemSearch] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [detailRecord, setDetailRecord] = useState<EquipmentInspectionRecord | null>(null);
   const [printRecord, setPrintRecord] = useState<EquipmentInspectionRecord | null>(null);
@@ -260,9 +267,18 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
     setActiveTab('history');
   };
 
+  const availableYears = useMemo(() => {
+    const years = Array.from(
+      new Set(records.map((r) => (r.inspectYear || '').trim()).filter(Boolean))
+    );
+    return years.sort((a, b) => Number(b) - Number(a));
+  }, [records]);
+
   const filteredRecords = useMemo(() => {
     return records.filter((rec) => {
       if (historyTeamFilter !== 'all' && rec.team !== historyTeamFilter) return false;
+      if (historyMonthFilter !== 'all' && rec.inspectMonth !== historyMonthFilter) return false;
+      if (historyYearFilter !== 'all' && rec.inspectYear !== historyYearFilter) return false;
       if (searchQuery.trim()) {
         const q = searchQuery.trim().toLowerCase();
         const hay = `${rec.inspectDateFormatted} ${rec.teamLabel} ${rec.inspectorName} ${rec.vehicleCode || ''} ${rec.plateNumber || ''} ${rec.summaryNotes}`.toLowerCase();
@@ -270,7 +286,144 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
       }
       return true;
     });
-  }, [records, historyTeamFilter, searchQuery]);
+  }, [records, historyTeamFilter, historyMonthFilter, historyYearFilter, searchQuery]);
+
+  // Matrix grouped template items for Tab 3 (Daily Quantity History Report)
+  const reportGroupedCategories = useMemo(() => {
+    const q = reportItemSearch.trim().toLowerCase();
+    const filteredTpl = EQUIPMENT_TEMPLATE_ITEMS.filter((tpl) => {
+      if (reportCategoryFilter !== 'all' && tpl.categoryId !== reportCategoryFilter) return false;
+      if (q) {
+        const hay = `${tpl.itemCode} ${tpl.name} ${tpl.categoryTitle} ${tpl.subCategoryTitle || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+    const catIds = Array.from(new Set(filteredTpl.map((i) => i.categoryId)));
+    return catIds.map((catId) => {
+      const catItems = filteredTpl.filter((i) => i.categoryId === catId);
+      const subGroups: Array<{ subTitle: string | null; items: typeof catItems }> = [];
+      for (const item of catItems) {
+        const subTitle = item.subCategoryTitle || null;
+        const last = subGroups[subGroups.length - 1];
+        if (last && last.subTitle === subTitle) {
+          last.items.push(item);
+        } else {
+          subGroups.push({ subTitle, items: [item] });
+        }
+      }
+      return {
+        categoryId: catId,
+        categoryTitle: catItems[0]?.categoryTitle || `หมวดที่ ${catId}`,
+        subGroups,
+      };
+    });
+  }, [reportCategoryFilter, reportItemSearch]);
+
+  const getShortThaiDateLabel = (rec: EquipmentInspectionRecord) => {
+    const shortMonthMap: Record<string, string> = {
+      มกราคม: 'ม.ค.',
+      กุมภาพันธ์: 'ก.พ.',
+      มีนาคม: 'มี.ค.',
+      เมษายน: 'เม.ย.',
+      พฤษภาคม: 'พ.ค.',
+      มิถุนายน: 'มิ.ย.',
+      กรกฎาคม: 'ก.ค.',
+      สิงหาคม: 'ส.ค.',
+      กันยายน: 'ก.ย.',
+      ตุลาคม: 'ต.ค.',
+      พฤศจิกายน: 'พ.ย.',
+      ธันวาคม: 'ธ.ค.',
+    };
+    const sm = shortMonthMap[rec.inspectMonth] || rec.inspectMonth;
+    const sy = rec.inspectYear ? rec.inspectYear.slice(-2) : '';
+    return `${rec.inspectDay} ${sm} ${sy}`.trim();
+  };
+
+  const escapeCsvCell = (val: string | number) => `"${String(val ?? '').replace(/"/g, '""')}"`;
+
+  const triggerCsvDownload = (filename: string, headers: string[], rows: (string | number)[][]) => {
+    const csvContent =
+      '\uFEFF' +
+      [headers.map(escapeCsvCell).join(','), ...rows.map((r) => r.map(escapeCsvCell).join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportSingleRecordCsv = (rec: EquipmentInspectionRecord) => {
+    const headers = [
+      'วันที่ตรวจ',
+      'ชุดปฏิบัติการ',
+      'ผู้ตรวจเช็ค',
+      'หมวดอุปกรณ์',
+      'รหัสรายการ',
+      'รายการอุปกรณ์',
+      'เกณฑ์ขั้นต่ำ',
+      'จำนวนที่มีจริง',
+      'หน่วย',
+      'สถานะ',
+      'หมายเหตุ',
+    ];
+    const rows = rec.items.map((item) => [
+      rec.inspectDateFormatted,
+      rec.teamLabel,
+      rec.inspectorName,
+      item.categoryTitle,
+      item.itemCode,
+      item.name,
+      item.minRequirementLabel,
+      item.availableQty,
+      item.unit,
+      item.conditionStatus === 'damaged'
+        ? 'ชำรุด'
+        : item.minCount !== null && item.availableQty < item.minCount
+        ? 'ไม่ครบ'
+        : 'พร้อม',
+      item.notes || '',
+    ]);
+    const safeName = `ตรวจอุปกรณ์BLS_${rec.teamLabel}_${rec.inspectDateFormatted}.csv`.replace(
+      /[\\/:*?"<>|]/g,
+      '_'
+    );
+    triggerCsvDownload(safeName, headers, rows);
+  };
+
+  const handleExportHistoryMatrixCsv = (targetRecords: EquipmentInspectionRecord[]) => {
+    if (!targetRecords.length) return;
+    const headers = [
+      'หมวดอุปกรณ์',
+      'รหัส',
+      'รายการอุปกรณ์',
+      'เกณฑ์ขั้นต่ำ',
+      'หน่วย',
+      ...targetRecords.map(
+        (rec) => `${rec.inspectDateFormatted} (${rec.team === 'team_1' ? 'ชุด 1' : 'ชุด 2'} - ${rec.inspectorName})`
+      ),
+    ];
+    const rows = EQUIPMENT_TEMPLATE_ITEMS.map((tpl) => {
+      const cells = targetRecords.map((rec) => {
+        const found = rec.items.find((i) => i.id === tpl.id);
+        if (!found) return '-';
+        const tag =
+          found.conditionStatus === 'damaged'
+            ? ' [ชำรุด]'
+            : found.minCount !== null && found.availableQty < found.minCount
+            ? ' [ไม่ครบ]'
+            : '';
+        return `${found.availableQty}${tag}`;
+      });
+      return [tpl.categoryTitle, tpl.itemCode, tpl.name, tpl.minRequirementLabel, tpl.unit, ...cells];
+    });
+    const safeName = `รายงานประวัติจำนวนอุปกรณ์BLS_ย้อนหลัง_${new Date().toISOString().slice(0, 10)}.csv`;
+    triggerCsvDownload(safeName, headers, rows);
+  };
 
   const escapeEquipmentHtml = (str: string) =>
     (str || '')
@@ -283,6 +436,191 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
     `ตรวจความพร้อมอุปกรณ์_${rec.organizationName}_${rec.teamLabel}_${rec.inspectDateFormatted}`
       .replace(/[\\/:*?"<>|]/g, '_')
       .trim();
+
+  // Official Printable A4 Landscape Historical Quantity Summary Report
+  const buildHistoryMatrixPrintHtml = (targetRecords: EquipmentInspectionRecord[]) => {
+    const shownRecords = targetRecords.slice(0, 12);
+    const filterSummary = [
+      historyTeamFilter === 'all'
+        ? 'ทุกชุดปฏิบัติการ'
+        : historyTeamFilter === 'team_1'
+        ? 'ชุดปฏิบัติการที่ 1'
+        : 'ชุดปฏิบัติการที่ 2',
+      historyMonthFilter === 'all' ? 'ทุกเดือน' : `เดือน${historyMonthFilter}`,
+      historyYearFilter === 'all' ? 'ทุกปี พ.ศ.' : `พ.ศ. ${historyYearFilter}`,
+    ].join(' · ');
+
+    const dateHeadersHtml = shownRecords
+      .map(
+        (rec) =>
+          `<th style="text-align:center; min-width:56px;">
+            <div>${escapeEquipmentHtml(getShortThaiDateLabel(rec))}</div>
+            <div style="font-size:9px; font-weight:500;">${rec.team === 'team_1' ? 'ชุด 1' : 'ชุด 2'}</div>
+          </th>`
+      )
+      .join('');
+
+    const bodyRowsHtml = [1, 2, 3, 4]
+      .map((catId) => {
+        const catItems = EQUIPMENT_TEMPLATE_ITEMS.filter((i) => i.categoryId === catId);
+        if (!catItems.length) return '';
+        const catRow = `<tr style="background:#e2e8f0; font-weight:700;">
+          <td colspan="${2 + shownRecords.length}" style="padding:4px 6px; border:1px solid #334155;">
+            ${escapeEquipmentHtml(catItems[0].categoryTitle)}
+          </td>
+        </tr>`;
+        const itemRows = catItems
+          .map((tpl) => {
+            const cols = shownRecords
+              .map((rec) => {
+                const found = rec.items.find((i) => i.id === tpl.id);
+                if (!found) {
+                  return `<td style="border:1px solid #475569; text-align:center; color:#94a3b8;">-</td>`;
+                }
+                const isDamaged = found.conditionStatus === 'damaged';
+                const isShort = tpl.minCount !== null && found.availableQty < tpl.minCount;
+                const bg = isDamaged ? '#fee2e2' : isShort ? '#fef3c7' : '#ffffff';
+                const color = isDamaged ? '#b91c1c' : isShort ? '#b45309' : '#0f172a';
+                const mark = isDamaged ? ' ✗' : isShort ? ' ⚠' : '';
+                return `<td style="border:1px solid #475569; text-align:center; font-weight:700; background:${bg}; color:${color}; white-space:nowrap;">
+                  ${found.availableQty}${mark}
+                </td>`;
+              })
+              .join('');
+            return `<tr>
+              <td style="border:1px solid #475569; padding:3px 6px;">
+                <strong>${escapeEquipmentHtml(tpl.itemCode)}</strong> ${escapeEquipmentHtml(tpl.name)}
+              </td>
+              <td style="border:1px solid #475569; padding:3px 5px; text-align:center; white-space:nowrap;">
+                ${escapeEquipmentHtml(tpl.minRequirementLabel)}
+              </td>
+              ${cols}
+            </tr>`;
+          })
+          .join('');
+        return catRow + itemRows;
+      })
+      .join('');
+
+    return `<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <title>รายงานสรุปประวัติจำนวนอุปกรณ์_BLS_ย้อนหลัง</title>
+  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    @page { size: A4 landscape; margin: 10mm; }
+    * { box-sizing: border-box; }
+    body { font-family: 'Sarabun', sans-serif; font-size: 11px; color: #0f172a; margin: 0; padding: 0; background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    h1 { margin: 0; font-size: 15px; text-align: center; }
+    .sub { text-align: center; font-size: 12px; margin-top: 2px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 10.5px; }
+    th { background: #e2e8f0; border: 1px solid #334155; padding: 4px 5px; font-weight: 700; }
+    tr { page-break-inside: avoid; }
+    .sign-wrap { margin-top: 14px; page-break-inside: avoid; }
+    .sign-grid { display: flex; justify-content: space-between; gap: 24px; margin-top: 10px; }
+    .sign-box { width: 46%; text-align: center; font-size: 11.5px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <h1>รายงานสรุปประวัติการตรวจนับจำนวนอุปกรณ์กู้ชีพ (BLS) ย้อนหลังรายวัน</h1>
+  <div class="sub"><strong>${escapeEquipmentHtml(ORGANIZATION_NAME)}</strong> · ตัวกรอง: ${escapeEquipmentHtml(filterSummary)} · แสดง ${shownRecords.length} จาก ${targetRecords.length} ครั้ง · พิมพ์เมื่อ ${escapeEquipmentHtml(new Date().toLocaleString('th-TH'))}</div>
+  <table>
+    <thead>
+      <tr>
+        <th style="text-align:left; width:34%;">รายการอุปกรณ์ (38 รายการ)</th>
+        <th style="text-align:center; width:9%;">เกณฑ์ขั้นต่ำ</th>
+        ${dateHeadersHtml}
+      </tr>
+    </thead>
+    <tbody>
+      ${bodyRowsHtml}
+    </tbody>
+  </table>
+  <div style="margin-top:6px; font-size:10px; color:#475569;">
+    หมายเหตุสัญลักษณ์: ตัวเลข = จำนวนอุปกรณ์ที่ตรวจนับได้จริงในวันนั้น · ⚠ (พื้นสีเหลือง) = จำนวนต่ำกว่าเกณฑ์ขั้นต่ำ · ✗ (พื้นสีแดง) = พบอุปกรณ์ชำรุด
+  </div>
+  <div class="sign-wrap">
+    <div class="sign-grid">
+      <div class="sign-box">
+        <div style="height:22px;"></div>
+        <div>ลงชื่อ..............................................................ผู้จัดทำรายงาน</div>
+        <div style="font-weight:700;">( ${escapeEquipmentHtml(currentUser.name || 'เจ้าหน้าที่')} )</div>
+        <div>วันที่............เดือน........................พ.ศ. ......................</div>
+      </div>
+      <div class="sign-box">
+        <div style="height:22px;"></div>
+        <div>ผู้ตรวจสอบ.....................................................................</div>
+        <div style="font-weight:700;">( นายวสันต์ วรรณเผือก )</div>
+        <div>ตำแหน่ง เจ้าพนักงานป้องกันและบรรเทาสาธารณภัยปฏิบัติงาน</div>
+      </div>
+    </div>
+    <div style="margin-top:14px;">
+      <div style="text-align:left; font-size:11.5px; line-height:1.5;">
+        <div style="font-weight:700;">จึงเรียนมาเพื่อโปรดทราบ</div>
+        <div style="height:20px; border-bottom:1.5px dotted #334155; width:100%;"></div>
+        <div style="height:22px; border-bottom:1.5px dotted #334155; width:100%;"></div>
+      </div>
+      <div style="display:flex; justify-content:flex-end; margin-top:10px;">
+        <div class="sign-box" style="width:46%;">
+          <div style="height:22px;"></div>
+          <div>ลงชื่อ.....................................................................</div>
+          <div style="font-weight:700; white-space:pre;">(        นายนิยม   สังข์เอียด        )</div>
+          <div>นายกองค์การบริหารส่วนตำบลหงษ์เจริญ</div>
+          <div>วันที่............เดือน........................พ.ศ. .......................</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
+  };
+
+  const handlePrintHistoryMatrix = (targetRecords: EquipmentInspectionRecord[]) => {
+    if (!targetRecords.length) return;
+    const previousTitle = document.title;
+    try {
+      const htmlContent = buildHistoryMatrixPrintHtml(targetRecords);
+      const printFrame = document.createElement('iframe');
+      printFrame.setAttribute(
+        'style',
+        'visibility:hidden; height:0; width:0; position:absolute; left:-9999px; bottom:0;'
+      );
+      document.body.appendChild(printFrame);
+
+      const frameDoc = printFrame.contentDocument || printFrame.contentWindow?.document;
+      if (frameDoc && printFrame.contentWindow) {
+        frameDoc.open();
+        frameDoc.write(htmlContent);
+        frameDoc.close();
+        setTimeout(async () => {
+          try {
+            document.title = `รายงานสรุปประวัติจำนวนอุปกรณ์_BLS_${new Date().toISOString().slice(0, 10)}`;
+            if ((frameDoc as any).fonts?.ready) {
+              await Promise.race([
+                (frameDoc as any).fonts.ready,
+                new Promise((res) => setTimeout(res, 1500)),
+              ]);
+            }
+            printFrame.contentWindow?.focus();
+            printFrame.contentWindow?.print();
+          } catch {
+            window.print();
+          } finally {
+            document.title = previousTitle;
+            setTimeout(() => {
+              if (document.body.contains(printFrame)) {
+                document.body.removeChild(printFrame);
+              }
+            }, 2500);
+          }
+        }, 350);
+      }
+    } catch {
+      document.title = previousTitle;
+      window.print();
+    }
+  };
 
   // Official Printable A4 Government PDF HTML builder
   const buildOfficialFormHtml = (rec: EquipmentInspectionRecord, showTopToolbar = false) => {
@@ -778,12 +1116,12 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
                 <span>{isSyncing ? 'กำลังซิงค์...' : 'ซิงค์ข้อมูลล่าสุด'}</span>
               </button>
             )}
-            <div className="flex items-center gap-1.5 rounded-2xl bg-slate-100 p-1.5 dark:bg-slate-800">
+            <div className="flex flex-wrap items-center gap-1.5 rounded-2xl bg-slate-100 p-1.5 dark:bg-slate-800">
               {!isExecutive && (
                 <button
                   type="button"
                   onClick={() => setActiveTab('form')}
-                  className={`inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-bold transition-all ${
+                  className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold transition-all ${
                     activeTab === 'form'
                       ? 'bg-white text-emerald-700 shadow-xs dark:bg-slate-900 dark:text-emerald-400'
                       : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
@@ -796,14 +1134,26 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
               <button
                 type="button"
                 onClick={() => setActiveTab('history')}
-                className={`inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-bold transition-all ${
+                className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold transition-all ${
                   activeTab === 'history'
                     ? 'bg-white text-sky-700 shadow-xs dark:bg-slate-900 dark:text-sky-400'
                     : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
                 }`}
               >
                 <Calendar className="h-4 w-4" />
-                <span>{isExecutive ? `แดชบอร์ดประวัติการตรวจอุปกรณ์ (${records.length})` : `ประวัติการตรวจ (${records.length})`}</span>
+                <span>{isExecutive ? `ประวัติการตรวจ (${records.length})` : `ประวัติการตรวจ (${records.length})`}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('report')}
+                className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold transition-all ${
+                  activeTab === 'report'
+                    ? 'bg-white text-indigo-700 shadow-xs dark:bg-slate-900 dark:text-indigo-400'
+                    : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
+                }`}
+              >
+                <Table2 className="h-4 w-4" />
+                <span>รายงานจำนวนย้อนหลัง</span>
               </button>
             </div>
           </div>
@@ -811,7 +1161,7 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
       </div>
 
       {/* Executive / History Summary KPI Strip */}
-      {activeTab === 'history' && (
+      {(activeTab === 'history' || activeTab === 'report') && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-2xs dark:border-slate-800 dark:bg-slate-900">
             <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">บันทึกตรวจอุปกรณ์ทั้งหมด</span>
@@ -1302,163 +1652,529 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
       {/* ========================================================= */}
       {activeTab === 'history' && (
         <div className="space-y-4">
-          {/* Search & Team Filter Bar */}
-          <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-xs dark:border-slate-800 dark:bg-slate-900 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-1.5">
-              {[
-                { id: 'all' as const, label: 'ทุกชุดปฏิบัติการ' },
-                { id: 'team_1' as const, label: 'ชุดปฏิบัติการที่ 1' },
-                { id: 'team_2' as const, label: 'ชุดปฏิบัติการที่ 2' },
-              ].map((opt) => (
-                <button
-                  key={opt.id}
-                  type="button"
-                  onClick={() => setHistoryTeamFilter(opt.id)}
-                  className={`rounded-xl px-3 py-1.5 text-xs font-bold transition-all ${
-                    historyTeamFilter === opt.id
-                      ? 'bg-sky-600 text-white'
-                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300'
-                  }`}
+          {/* Search, Team, Month & Year Filter Bar */}
+          <div className="rounded-3xl border border-slate-200 bg-white p-4 shadow-xs dark:border-slate-800 dark:bg-slate-900 flex flex-col gap-3">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {[
+                  { id: 'all' as const, label: 'ทุกชุดปฏิบัติการ' },
+                  { id: 'team_1' as const, label: 'ชุดปฏิบัติการที่ 1' },
+                  { id: 'team_2' as const, label: 'ชุดปฏิบัติการที่ 2' },
+                ].map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setHistoryTeamFilter(opt.id)}
+                    className={`rounded-xl px-3 py-1.5 text-xs font-bold transition-all ${
+                      historyTeamFilter === opt.id
+                        ? 'bg-sky-600 text-white'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={historyMonthFilter}
+                  onChange={(e) => setHistoryMonthFilter(e.target.value)}
+                  aria-label="กรองตามเดือน"
+                  className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-800 focus:border-sky-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                 >
-                  {opt.label}
-                </button>
-              ))}
+                  <option value="all">ทุกเดือน</option>
+                  {THAI_MONTHS.map((m) => (
+                    <option key={m} value={m}>
+                      เดือน{m}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  value={historyYearFilter}
+                  onChange={(e) => setHistoryYearFilter(e.target.value)}
+                  aria-label="กรองตามปี พ.ศ."
+                  className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-800 focus:border-sky-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                >
+                  <option value="all">ทุกปี พ.ศ.</option>
+                  {availableYears.map((y) => (
+                    <option key={y} value={y}>
+                      พ.ศ. {y}
+                    </option>
+                  ))}
+                </select>
+
+                <div className="relative flex-1 sm:w-64">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="ค้นหาวันที่, ผู้ตรวจ, รหัสรถ..."
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-xs font-medium text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                  />
+                </div>
+              </div>
             </div>
 
-            <div className="relative sm:w-72">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="ค้นหาวันที่, ผู้ตรวจ, รหัสรถ..."
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-xs font-medium text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-              />
-            </div>
+            {filteredRecords.length > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-slate-100 dark:border-slate-800 text-xs">
+                <span className="text-slate-500 dark:text-slate-400">
+                  พบประวัติการตรวจ <strong className="text-slate-900 dark:text-white">{filteredRecords.length}</strong> รายการ
+                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('report')}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-bold text-indigo-700 hover:bg-indigo-100 dark:border-indigo-900/50 dark:bg-indigo-950/40 dark:text-indigo-300"
+                  >
+                    <Table2 className="h-3.5 w-3.5" />
+                    <span>ดูตารางเปรียบเทียบจำนวนรายวัน</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleExportHistoryMatrixCsv(filteredRecords)}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    <span>ส่งออก CSV ทั้งหมด</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {filteredRecords.length === 0 ? (
             <div className="rounded-3xl border border-dashed border-slate-300 bg-white p-10 text-center dark:border-slate-700 dark:bg-slate-900">
               <PackageCheck className="mx-auto h-10 w-10 text-slate-300 dark:text-slate-600" />
               <p className="mt-3 text-sm font-bold text-slate-700 dark:text-slate-300">
-                ยังไม่มีประวัติการตรวจความพร้อมอุปกรณ์ BLS
+                ไม่พบประวัติการตรวจความพร้อมอุปกรณ์ BLS ตามเงื่อนไขที่เลือก
               </p>
               <p className="mt-1 text-xs text-slate-400">
-                เริ่มตรวจความพร้อมอุปกรณ์ได้ที่แท็บ &ldquo;แบบฟอร์มตรวจอุปกรณ์&rdquo;
+                ลองเปลี่ยนตัวกรองเดือน/ปี หรือเริ่มบันทึกใหม่ได้ที่แท็บ &ldquo;แบบฟอร์มตรวจอุปกรณ์&rdquo;
               </p>
-              <button
-                type="button"
-                onClick={() => setActiveTab('form')}
-                className="mt-4 inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-500"
-              >
-                <ClipboardList className="h-4 w-4" />
-                <span>ไปที่แบบฟอร์มตรวจอุปกรณ์</span>
-              </button>
+              {!isExecutive && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('form')}
+                  className="mt-4 inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-500"
+                >
+                  <ClipboardList className="h-4 w-4" />
+                  <span>ไปที่แบบฟอร์มตรวจอุปกรณ์</span>
+                </button>
+              )}
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {filteredRecords.map((rec) => (
-                <div
-                  key={rec.id}
-                  className="rounded-3xl border border-slate-200 bg-white p-5 shadow-xs dark:border-slate-800 dark:bg-slate-900 flex flex-col justify-between gap-4"
-                >
-                  <div className="space-y-3">
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="rounded-lg bg-sky-100 px-2 py-0.5 text-[11px] font-bold text-sky-800 dark:bg-sky-950/60 dark:text-sky-300">
-                            {rec.teamLabel}
-                          </span>
-                          {rec.vehicleCode && (
-                            <span className="rounded-lg bg-slate-100 px-2 py-0.5 font-mono text-[11px] font-bold text-slate-700 dark:bg-slate-800 dark:text-slate-300">
-                              {rec.vehicleCode}
+              {filteredRecords.map((rec) => {
+                const totalUnitsCounted = rec.items.reduce((sum, item) => sum + (item.availableQty || 0), 0);
+                const issueItems = rec.items.filter(
+                  (i) =>
+                    i.conditionStatus === 'damaged' ||
+                    (i.minCount !== null && i.availableQty < i.minCount)
+                );
+                return (
+                  <div
+                    key={rec.id}
+                    className="rounded-3xl border border-slate-200 bg-white p-5 shadow-xs dark:border-slate-800 dark:bg-slate-900 flex flex-col justify-between gap-4"
+                  >
+                    <div className="space-y-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="rounded-lg bg-sky-100 px-2 py-0.5 text-[11px] font-bold text-sky-800 dark:bg-sky-950/60 dark:text-sky-300">
+                              {rec.teamLabel}
                             </span>
-                          )}
+                            {rec.vehicleCode && (
+                              <span className="rounded-lg bg-slate-100 px-2 py-0.5 font-mono text-[11px] font-bold text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                                {rec.vehicleCode}
+                              </span>
+                            )}
+                          </div>
+                          <h3 className="mt-1.5 text-sm font-extrabold text-slate-900 dark:text-white">
+                            ประจำวันที่ {rec.inspectDateFormatted}
+                          </h3>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                            {rec.organizationName} · ผู้ตรวจ: {rec.inspectorName}
+                          </p>
                         </div>
-                        <h3 className="mt-1.5 text-sm font-extrabold text-slate-900 dark:text-white">
-                          ประจำวันที่ {rec.inspectDateFormatted}
-                        </h3>
-                        <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                          {rec.organizationName} · ผู้ตรวจ: {rec.inspectorName}
+
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-xl px-2.5 py-1 text-[11px] font-bold shrink-0 ${
+                            rec.overallStatus === 'ready'
+                              ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
+                              : rec.overallStatus === 'incomplete'
+                              ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
+                              : 'bg-red-100 text-red-800 dark:bg-red-950/60 dark:text-red-300'
+                          }`}
+                        >
+                          {rec.overallStatus === 'ready' && <CheckCircle2 className="h-3.5 w-3.5" />}
+                          {rec.overallStatus === 'incomplete' && <AlertTriangle className="h-3.5 w-3.5" />}
+                          {rec.overallStatus === 'critical' && <XCircle className="h-3.5 w-3.5" />}
+                          <span>
+                            {rec.overallStatus === 'ready'
+                              ? 'พร้อมปฏิบัติการ'
+                              : rec.overallStatus === 'incomplete'
+                              ? 'ไม่ครบเกณฑ์'
+                              : 'พบชำรุด'}
+                          </span>
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 rounded-2xl bg-slate-50 p-3 text-xs dark:bg-slate-850">
+                        <div>
+                          <span className="text-[10px] text-slate-400 block">เกณฑ์บังคับครบ</span>
+                          <span className="font-extrabold text-slate-900 dark:text-white tabular-nums">
+                            {rec.requiredPassedCount} / {rec.requiredTotalCount}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-400 block">จำนวนนับรวม</span>
+                          <span className="font-extrabold text-emerald-700 dark:text-emerald-400 tabular-nums">
+                            {totalUnitsCounted} หน่วย
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-400 block">เวลาบันทึก</span>
+                          <span className="font-semibold text-slate-700 dark:text-slate-300 text-[11px]">
+                            {rec.uploadTimestamp}
+                          </span>
+                        </div>
+                      </div>
+
+                      {issueItems.length > 0 && (
+                        <div className="rounded-xl border border-amber-200/80 bg-amber-50/70 px-3 py-2 text-[11px] text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">
+                          <span className="font-bold">พบไม่ครบ/ชำรุด ({issueItems.length} รายการ): </span>
+                          {issueItems
+                            .slice(0, 3)
+                            .map((i) => `${i.itemCode} ${i.name} (${i.conditionStatus === 'damaged' ? 'ชำรุด' : `มี ${i.availableQty}/${i.minRequirementLabel}`})`)
+                            .join(', ')}
+                          {issueItems.length > 3 ? ` และอีก ${issueItems.length - 3} รายการ` : ''}
+                        </div>
+                      )}
+
+                      {rec.summaryNotes && (
+                        <p className="rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-600 dark:bg-slate-850 dark:text-slate-300">
+                          หมายเหตุ: {rec.summaryNotes}
                         </p>
-                      </div>
-
-                      <span
-                        className={`inline-flex items-center gap-1 rounded-xl px-2.5 py-1 text-[11px] font-bold shrink-0 ${
-                          rec.overallStatus === 'ready'
-                            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
-                            : rec.overallStatus === 'incomplete'
-                            ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
-                            : 'bg-red-100 text-red-800 dark:bg-red-950/60 dark:text-red-300'
-                        }`}
-                      >
-                        {rec.overallStatus === 'ready' && <CheckCircle2 className="h-3.5 w-3.5" />}
-                        {rec.overallStatus === 'incomplete' && <AlertTriangle className="h-3.5 w-3.5" />}
-                        {rec.overallStatus === 'critical' && <XCircle className="h-3.5 w-3.5" />}
-                        <span>
-                          {rec.overallStatus === 'ready'
-                            ? 'พร้อมปฏิบัติการ'
-                            : rec.overallStatus === 'incomplete'
-                            ? 'ไม่ครบเกณฑ์'
-                            : 'พบชำรุด'}
-                        </span>
-                      </span>
+                      )}
                     </div>
 
-                    <div className="grid grid-cols-2 gap-2 rounded-2xl bg-slate-50 p-3 text-xs dark:bg-slate-850">
-                      <div>
-                        <span className="text-[10px] text-slate-400 block">รายการบังคับครบ</span>
-                        <span className="font-extrabold text-slate-900 dark:text-white tabular-nums">
-                          {rec.requiredPassedCount} / {rec.requiredTotalCount} รายการ
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-slate-400 block">เวลาบันทึก</span>
-                        <span className="font-semibold text-slate-700 dark:text-slate-300">
-                          {rec.uploadTimestamp}
-                        </span>
-                      </div>
-                    </div>
-
-                    {rec.summaryNotes && (
-                      <p className="rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-600 dark:bg-slate-850 dark:text-slate-300">
-                        หมายเหตุ: {rec.summaryNotes}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="flex flex-wrap items-center justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
-                    <button
-                      type="button"
-                      onClick={() => setDetailRecord(rec)}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-                    >
-                      <Eye className="h-3.5 w-3.5 text-sky-600" />
-                      <span>ดูรายละเอียด</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setPrintRecord(rec)}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-sky-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-sky-500"
-                    >
-                      <Printer className="h-3.5 w-3.5" />
-                      <span>พิมพ์แบบฟอร์ม A4</span>
-                    </button>
-
-                    {currentUser.role === 'admin' && (
+                    <div className="flex flex-wrap items-center justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
                       <button
                         type="button"
-                        onClick={() => setDeleteTarget(rec)}
-                        className="inline-flex items-center gap-1 rounded-xl border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-bold text-red-700 hover:bg-red-100 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300"
-                        title="ลบประวัติ (Admin)"
+                        onClick={() => handleExportSingleRecordCsv(rec)}
+                        className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                        title="ดาวน์โหลดไฟล์ CSV รายการนี้"
                       >
-                        <Trash2 className="h-3.5 w-3.5" />
+                        <Download className="h-3.5 w-3.5 text-emerald-600" />
+                        <span>CSV</span>
                       </button>
-                    )}
+
+                      <button
+                        type="button"
+                        onClick={() => setDetailRecord(rec)}
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                      >
+                        <Eye className="h-3.5 w-3.5 text-sky-600" />
+                        <span>ดูจำนวนรายชิ้น</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setPrintRecord(rec)}
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-sky-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-sky-500"
+                      >
+                        <Printer className="h-3.5 w-3.5" />
+                        <span>เรียกรายงาน A4</span>
+                      </button>
+
+                      {currentUser.role === 'admin' && (
+                        <button
+                          type="button"
+                          onClick={() => setDeleteTarget(rec)}
+                          className="inline-flex items-center gap-1 rounded-xl border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-bold text-red-700 hover:bg-red-100 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300"
+                          title="ลบประวัติ (Admin)"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* TAB 3: DAILY EQUIPMENT QUANTITY HISTORY MATRIX & REPORT   */}
+      {/* ========================================================= */}
+      {activeTab === 'report' && (
+        <div className="space-y-4">
+          <div className="rounded-3xl border border-slate-200 bg-white p-4 sm:p-5 shadow-xs dark:border-slate-800 dark:bg-slate-900 space-y-3">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div>
+                <h2 className="text-sm sm:text-base font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Table2 className="h-4 w-4 text-indigo-600" />
+                  <span>รายงานสรุปประวัติจำนวนอุปกรณ์ที่ตรวจนับได้ย้อนหลังรายวัน</span>
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  เปรียบเทียบจำนวนที่มีจริงของอุปกรณ์แต่ละรายการในแต่ละวันที่ตรวจ คลิกที่หัวคอลัมน์วันที่เพื่อเปิดใบรายงาน A4 ของวันนั้นได้ทันที
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={filteredRecords.length === 0}
+                  onClick={() => handleExportHistoryMatrixCsv(filteredRecords)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-xs font-bold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-300"
+                >
+                  <Download className="h-4 w-4" />
+                  <span>ส่งออก Excel (.CSV)</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={filteredRecords.length === 0}
+                  onClick={() => handlePrintHistoryMatrix(filteredRecords)}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-bold text-white shadow-xs hover:bg-indigo-500 disabled:opacity-50"
+                >
+                  <Printer className="h-4 w-4" />
+                  <span>พิมพ์ / บันทึก PDF รายงานสรุปย้อนหลัง</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Filters for Historical Report */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+              <select
+                value={historyTeamFilter}
+                onChange={(e) => setHistoryTeamFilter(e.target.value as 'all' | EquipmentTeamType)}
+                className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              >
+                <option value="all">ทุกชุดปฏิบัติการ</option>
+                <option value="team_1">ชุดปฏิบัติการที่ 1</option>
+                <option value="team_2">ชุดปฏิบัติการที่ 2</option>
+              </select>
+
+              <select
+                value={historyMonthFilter}
+                onChange={(e) => setHistoryMonthFilter(e.target.value)}
+                className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              >
+                <option value="all">ทุกเดือน</option>
+                {THAI_MONTHS.map((m) => (
+                  <option key={m} value={m}>
+                    เดือน{m}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={historyYearFilter}
+                onChange={(e) => setHistoryYearFilter(e.target.value)}
+                className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              >
+                <option value="all">ทุกปี พ.ศ.</option>
+                {availableYears.map((y) => (
+                  <option key={y} value={y}>
+                    พ.ศ. {y}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={reportCategoryFilter}
+                onChange={(e) =>
+                  setReportCategoryFilter(e.target.value === 'all' ? 'all' : Number(e.target.value))
+                }
+                className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-800 focus:border-indigo-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              >
+                <option value="all">ทุกหมวดอุปกรณ์ (หมวด 1-4)</option>
+                <option value={1}>หมวด 1: อุปกรณ์ป้องกันตนเองฯ</option>
+                <option value={2}>หมวด 2: เครื่องมือแพทย์ประเมินผู้ป่วย</option>
+                <option value={3}>หมวด 3: อุปกรณ์ช่วยหายใจ/กู้ชีพ</option>
+                <option value={4}>หมวด 4: อุปกรณ์ดาม/เคลื่อนย้าย/ทำแผล</option>
+              </select>
+
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                <input
+                  type="text"
+                  value={reportItemSearch}
+                  onChange={(e) => setReportItemSearch(e.target.value)}
+                  placeholder="ค้นหาชื่ออุปกรณ์..."
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 pl-8 pr-3 py-2 text-xs font-medium text-slate-900 focus:border-indigo-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                />
+              </div>
+            </div>
+          </div>
+
+          {filteredRecords.length === 0 ? (
+            <div className="rounded-3xl border border-dashed border-slate-300 bg-white p-10 text-center dark:border-slate-700 dark:bg-slate-900">
+              <Table2 className="mx-auto h-10 w-10 text-slate-300 dark:text-slate-600" />
+              <p className="mt-3 text-sm font-bold text-slate-700 dark:text-slate-300">
+                ยังไม่มีประวัติการตรวจตามเงื่อนไขที่เลือก
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                เลือกตัวกรองใหม่ หรือบันทึกการตรวจความพร้อมอุปกรณ์เพื่อเริ่มสะสมประวัติรายวัน
+              </p>
+            </div>
+          ) : (
+            <div className="rounded-3xl border border-slate-200 bg-white shadow-xs overflow-hidden dark:border-slate-800 dark:bg-slate-900">
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-900 text-white">
+                      <th className="sticky left-0 z-20 bg-slate-900 border-b border-r border-slate-700 px-3 py-2.5 text-left min-w-[230px] sm:min-w-[280px]">
+                        รายการอุปกรณ์
+                      </th>
+                      <th className="border-b border-r border-slate-700 px-2.5 py-2.5 text-center whitespace-nowrap w-24">
+                        เกณฑ์ขั้นต่ำ
+                      </th>
+                      {filteredRecords.map((rec) => (
+                        <th
+                          key={rec.id}
+                          className="border-b border-r border-slate-700 px-2.5 py-2 text-center min-w-[106px] align-top"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => setPrintRecord(rec)}
+                            title={`คลิกเพื่อเปิดรายงาน A4 วันที่ ${rec.inspectDateFormatted}`}
+                            className="group w-full text-center hover:text-sky-300 transition-colors"
+                          >
+                            <div className="font-extrabold whitespace-nowrap underline decoration-dotted underline-offset-2">
+                              {getShortThaiDateLabel(rec)}
+                            </div>
+                            <div className="mt-0.5 text-[10px] font-semibold text-sky-300">
+                              {rec.team === 'team_1' ? 'ชุดปฏิบัติการ 1' : 'ชุดปฏิบัติการ 2'}
+                            </div>
+                            <div className="mt-0.5 text-[10px] font-normal text-slate-300 truncate max-w-[96px] mx-auto">
+                              {rec.inspectorName}
+                            </div>
+                          </button>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reportGroupedCategories.map((cat) => (
+                      <React.Fragment key={cat.categoryId}>
+                        <tr className="bg-slate-100 dark:bg-slate-800 font-bold">
+                          <td
+                            colSpan={2 + filteredRecords.length}
+                            className="border-b border-slate-200 dark:border-slate-700 px-3 py-2 text-slate-900 dark:text-white"
+                          >
+                            {cat.categoryTitle}
+                          </td>
+                        </tr>
+                        {cat.subGroups.map((sg, sgIdx) => (
+                          <React.Fragment key={`${cat.categoryId}-${sgIdx}`}>
+                            {sg.subTitle && (
+                              <tr className="bg-sky-50/70 dark:bg-sky-950/30 font-bold">
+                                <td
+                                  colSpan={2 + filteredRecords.length}
+                                  className="border-b border-slate-200 dark:border-slate-700 px-5 py-1.5 text-sky-900 dark:text-sky-300"
+                                >
+                                  {sg.subTitle}
+                                </td>
+                              </tr>
+                            )}
+                            {sg.items.map((tpl) => (
+                              <tr
+                                key={tpl.id}
+                                className="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 transition-colors"
+                              >
+                                <td
+                                  className={`sticky left-0 z-10 bg-white dark:bg-slate-900 border-b border-r border-slate-200 dark:border-slate-700 py-2 pr-3 ${
+                                    tpl.subCategoryTitle ? 'pl-6' : 'pl-3'
+                                  }`}
+                                >
+                                  <span className="font-bold text-slate-800 dark:text-slate-100">
+                                    {tpl.itemCode}
+                                  </span>{' '}
+                                  <span className="text-slate-700 dark:text-slate-300">{tpl.name}</span>
+                                </td>
+                                <td className="border-b border-r border-slate-200 dark:border-slate-700 px-2 py-2 text-center font-semibold text-slate-600 dark:text-slate-400 whitespace-nowrap">
+                                  {tpl.minRequirementLabel}
+                                </td>
+                                {filteredRecords.map((rec) => {
+                                  const found = rec.items.find((i) => i.id === tpl.id);
+                                  if (!found) {
+                                    return (
+                                      <td
+                                        key={`${rec.id}-${tpl.id}`}
+                                        className="border-b border-r border-slate-200 dark:border-slate-700 px-2 py-2 text-center text-slate-400"
+                                      >
+                                        -
+                                      </td>
+                                    );
+                                  }
+                                  const isDamaged = found.conditionStatus === 'damaged';
+                                  const isShort =
+                                    tpl.minCount !== null && found.availableQty < tpl.minCount;
+                                  return (
+                                    <td
+                                      key={`${rec.id}-${tpl.id}`}
+                                      title={
+                                        found.notes
+                                          ? `หมายเหตุ: ${found.notes}`
+                                          : `${rec.inspectDateFormatted}: ${found.availableQty} ${found.unit}`
+                                      }
+                                      className={`border-b border-r border-slate-200 dark:border-slate-700 px-2 py-2 text-center whitespace-nowrap ${
+                                        isDamaged
+                                          ? 'bg-red-50/90 text-red-700 dark:bg-red-950/40 dark:text-red-300'
+                                          : isShort
+                                          ? 'bg-amber-50/90 text-amber-800 dark:bg-amber-950/30 dark:text-amber-300'
+                                          : 'text-emerald-700 dark:text-emerald-400'
+                                      }`}
+                                    >
+                                      <div className="font-extrabold tabular-nums">
+                                        {found.availableQty}{' '}
+                                        <span className="text-[10px] font-medium opacity-75">
+                                          {found.unit}
+                                        </span>
+                                      </div>
+                                      {isDamaged && (
+                                        <div className="text-[10px] font-bold text-red-600 dark:text-red-400">
+                                          ชำรุด
+                                        </div>
+                                      )}
+                                      {!isDamaged && isShort && (
+                                        <div className="text-[10px] font-bold text-amber-600 dark:text-amber-400">
+                                          ไม่ครบ
+                                        </div>
+                                      )}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            ))}
+                          </React.Fragment>
+                        ))}
+                      </React.Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 dark:bg-slate-850 px-4 py-2.5 text-[11px] text-slate-500 dark:text-slate-400 border-t border-slate-200 dark:border-slate-800">
+                <span>
+                  แสดง <strong className="text-slate-800 dark:text-slate-200">{filteredRecords.length}</strong> รอบการตรวจ · ข้อมูลเก็บย้อนหลังครบทุกรายการใน Google Sheets และ Google Drive
+                </span>
+                <div className="flex items-center gap-3">
+                  <span className="inline-flex items-center gap-1">
+                    <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> ครบเกณฑ์/พร้อม
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <span className="h-2.5 w-2.5 rounded-full bg-amber-500" /> ต่ำกว่าเกณฑ์
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <span className="h-2.5 w-2.5 rounded-full bg-red-500" /> ชำรุด
+                  </span>
                 </div>
-              ))}
+              </div>
             </div>
           )}
         </div>
@@ -1470,7 +2186,7 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
       {detailRecord && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-3 sm:p-6 backdrop-blur-sm overflow-y-auto">
           <div className="my-auto w-full max-w-4xl overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4 dark:border-slate-800">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-6 py-4 dark:border-slate-800">
               <div>
                 <h3 className="text-base font-bold text-slate-900 dark:text-white">
                   รายละเอียดการตรวจความพร้อมอุปกรณ์ · {detailRecord.teamLabel}
@@ -1482,6 +2198,14 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  onClick={() => handleExportSingleRecordCsv(detailRecord)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-300"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  <span>ส่งออก CSV</span>
+                </button>
+                <button
+                  type="button"
                   onClick={() => {
                     const target = detailRecord;
                     setDetailRecord(null);
@@ -1490,7 +2214,7 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
                   className="inline-flex items-center gap-1.5 rounded-xl bg-sky-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-sky-500"
                 >
                   <Printer className="h-3.5 w-3.5" />
-                  <span>พิมพ์แบบฟอร์ม</span>
+                  <span>พิมพ์แบบฟอร์ม A4</span>
                 </button>
                 <button
                   type="button"
@@ -1502,7 +2226,42 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
               </div>
             </div>
 
-            <div className="max-h-[75vh] overflow-y-auto p-6">
+            {/* Summary KPI Strip inside Detail Modal */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 border-b border-slate-200 bg-slate-50 px-6 py-3 text-xs dark:border-slate-800 dark:bg-slate-850">
+              <div>
+                <span className="text-[10px] text-slate-400 block">เกณฑ์บังคับผ่าน</span>
+                <span className="font-extrabold text-emerald-700 dark:text-emerald-400 tabular-nums">
+                  {detailRecord.requiredPassedCount} / {detailRecord.requiredTotalCount} รายการ
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 block">จำนวนอุปกรณ์นับรวม</span>
+                <span className="font-extrabold text-slate-900 dark:text-white tabular-nums">
+                  {detailRecord.items.reduce((s, i) => s + (i.availableQty || 0), 0)} หน่วย
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 block">รายการไม่ครบ / ชำรุด</span>
+                <span className="font-extrabold text-amber-600 dark:text-amber-400 tabular-nums">
+                  {
+                    detailRecord.items.filter(
+                      (i) =>
+                        i.conditionStatus === 'damaged' ||
+                        (i.minCount !== null && i.availableQty < i.minCount)
+                    ).length
+                  }{' '}
+                  รายการ
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-400 block">วัน-เวลาที่บันทึก</span>
+                <span className="font-semibold text-slate-700 dark:text-slate-300">
+                  {detailRecord.uploadTimestamp}
+                </span>
+              </div>
+            </div>
+
+            <div className="max-h-[70vh] overflow-y-auto p-6">
               <table className="w-full border-collapse border border-slate-200 text-xs dark:border-slate-700">
                 <thead>
                   <tr className="bg-slate-900 text-white">
