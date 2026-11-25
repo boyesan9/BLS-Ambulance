@@ -35,6 +35,7 @@ import {
   ClipboardList,
   Save,
   FileDown,
+  RefreshCw,
 } from 'lucide-react';
 
 interface EquipmentChecklistViewProps {
@@ -44,6 +45,8 @@ interface EquipmentChecklistViewProps {
   onSaveRecord: (record: EquipmentInspectionRecord) => void | Promise<void>;
   onDeleteRecord: (id: string) => void | Promise<void>;
   isSubmitting?: boolean;
+  onRefreshCloud?: () => void | Promise<void>;
+  isSyncing?: boolean;
 }
 
 export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
@@ -53,6 +56,8 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
   onSaveRecord,
   onDeleteRecord,
   isSubmitting = false,
+  onRefreshCloud,
+  isSyncing = false,
 }) => {
   const isExecutive = currentUser.role === 'executive';
   const defaultDate = useMemo(() => getDefaultThaiDateParts(), []);
@@ -83,6 +88,29 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
   const [printRecord, setPrintRecord] = useState<EquipmentInspectionRecord | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<EquipmentInspectionRecord | null>(null);
   const [printStatus, setPrintStatus] = useState<string | null>(null);
+
+  // Sync inspectorName when currentUser profile reconciles from cloud
+  React.useEffect(() => {
+    if (currentUser.name) {
+      setInspectorName((prev) => (prev ? prev : currentUser.name));
+    }
+  }, [currentUser.name]);
+
+  // Keep open detail/print modals synchronized whenever records refresh from cloud
+  React.useEffect(() => {
+    if (detailRecord) {
+      const updated = records.find((r) => r.id === detailRecord.id);
+      if (updated && updated !== detailRecord) {
+        setDetailRecord(updated);
+      }
+    }
+    if (printRecord) {
+      const updated = records.find((r) => r.id === printRecord.id);
+      if (updated && updated !== printRecord) {
+        setPrintRecord(updated);
+      }
+    }
+  }, [records, detailRecord, printRecord]);
 
   // Live metrics calculation
   const metrics = useMemo(() => {
@@ -736,34 +764,48 @@ export const EquipmentChecklistView: React.FC<EquipmentChecklistViewProps> = ({
             </div>
           </div>
 
-          {/* Sub-Tabs */}
-          <div className="flex items-center gap-1.5 rounded-2xl bg-slate-100 p-1.5 dark:bg-slate-800 self-start lg:self-auto">
-            {!isExecutive && (
+          {/* Sub-Tabs & Cloud Sync Button */}
+          <div className="flex flex-wrap items-center gap-2 self-start lg:self-auto">
+            {onRefreshCloud && (
               <button
                 type="button"
-                onClick={() => setActiveTab('form')}
+                onClick={() => onRefreshCloud()}
+                disabled={isSyncing}
+                title="ดึงข้อมูลตรวจความพร้อมอุปกรณ์ล่าสุดจาก Cloud"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-700 shadow-2xs transition-all hover:bg-slate-50 hover:text-emerald-700 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${isSyncing ? 'animate-spin text-emerald-600' : ''}`} />
+                <span>{isSyncing ? 'กำลังซิงค์...' : 'ซิงค์ข้อมูลล่าสุด'}</span>
+              </button>
+            )}
+            <div className="flex items-center gap-1.5 rounded-2xl bg-slate-100 p-1.5 dark:bg-slate-800">
+              {!isExecutive && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('form')}
+                  className={`inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-bold transition-all ${
+                    activeTab === 'form'
+                      ? 'bg-white text-emerald-700 shadow-xs dark:bg-slate-900 dark:text-emerald-400'
+                      : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
+                  }`}
+                >
+                  <ClipboardList className="h-4 w-4" />
+                  <span>แบบฟอร์มตรวจอุปกรณ์</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setActiveTab('history')}
                 className={`inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-bold transition-all ${
-                  activeTab === 'form'
-                    ? 'bg-white text-emerald-700 shadow-xs dark:bg-slate-900 dark:text-emerald-400'
+                  activeTab === 'history'
+                    ? 'bg-white text-sky-700 shadow-xs dark:bg-slate-900 dark:text-sky-400'
                     : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
                 }`}
               >
-                <ClipboardList className="h-4 w-4" />
-                <span>แบบฟอร์มตรวจอุปกรณ์</span>
+                <Calendar className="h-4 w-4" />
+                <span>{isExecutive ? `แดชบอร์ดประวัติการตรวจอุปกรณ์ (${records.length})` : `ประวัติการตรวจ (${records.length})`}</span>
               </button>
-            )}
-            <button
-              type="button"
-              onClick={() => setActiveTab('history')}
-              className={`inline-flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-bold transition-all ${
-                activeTab === 'history'
-                  ? 'bg-white text-sky-700 shadow-xs dark:bg-slate-900 dark:text-sky-400'
-                  : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
-              }`}
-            >
-              <Calendar className="h-4 w-4" />
-              <span>{isExecutive ? `แดชบอร์ดประวัติการตรวจอุปกรณ์ (${records.length})` : `ประวัติการตรวจ (${records.length})`}</span>
-            </button>
+            </div>
           </div>
         </div>
       </div>

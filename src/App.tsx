@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   AmbulanceVehicle,
   GoogleSheetsConfig,
@@ -89,6 +89,7 @@ import {
   syncFuelLogsToSheet,
   appendEquipmentInspectionToSheet,
   syncEquipmentInspectionsToSheet,
+  pullEquipmentInspectionsFromSheet,
   appendRequisitionToSheet,
   syncRequisitionsToSheet,
 } from './services/googleSheets';
@@ -153,6 +154,8 @@ export default function App() {
 
   const [isSubmittingInspection, setIsSubmittingInspection] = useState(false);
   const [isSyncingGSheets, setIsSyncingGSheets] = useState(false);
+  const isSyncingCloudRef = useRef(false);
+  const lastCloudSyncAtRef = useRef(0);
   const [toastNotification, setToastNotification] = useState<{
     type: 'success' | 'info' | 'error';
     title: string;
@@ -428,6 +431,62 @@ export default function App() {
     return reconciled;
   };
 
+  // Reconcile BLS Equipment Inspections between Google Sheets (Single Source of Truth) and Drive/Local
+  const reconcileEquipmentInspectionsList = (
+    sheetRecords: EquipmentInspectionRecord[],
+    existingRecords: EquipmentInspectionRecord[],
+    exactSheetIds?: string[]
+  ): EquipmentInspectionRecord[] => {
+    const exactSet = new Set(exactSheetIds || []);
+    const localMap = new Map(existingRecords.map((e) => [e.id, e]));
+    const seenIds = new Set<string>();
+    const reconciled: EquipmentInspectionRecord[] = [];
+
+    for (const pe of sheetRecords) {
+      if (!pe.id || seenIds.has(pe.id)) continue;
+      seenIds.add(pe.id);
+      const local = localMap.get(pe.id);
+
+      if (exactSet.has(pe.id)) {
+        // Sheet row has lossless Column L JSON payload -> authoritative across all devices
+        reconciled.push({
+          ...pe,
+          inspectorRole: pe.inspectorRole || local?.inspectorRole || 'staff',
+          googleSheetsSyncStatus: 'synced' as const,
+        });
+      } else if (local && local.items && local.items.length > 0) {
+        // Legacy Sheet row without Column L JSON -> preserve richer item-level details from Drive/Local
+        reconciled.push({
+          ...pe,
+          items: local.items,
+          requiredPassedCount: local.requiredPassedCount,
+          requiredTotalCount: local.requiredTotalCount,
+          overallStatus: local.overallStatus,
+          summaryNotes: local.summaryNotes ?? pe.summaryNotes,
+          inspectorRole: local.inspectorRole || pe.inspectorRole,
+          createdAt: local.createdAt || pe.createdAt,
+          googleSheetsSyncStatus: 'synced' as const,
+        });
+      } else {
+        reconciled.push({
+          ...pe,
+          googleSheetsSyncStatus: 'synced' as const,
+        });
+      }
+    }
+
+    // Preserve local unsynced records (e.g., created offline before cloud sync)
+    for (const loc of existingRecords) {
+      if (loc.id && !seenIds.has(loc.id) && loc.googleSheetsSyncStatus !== 'synced') {
+        seenIds.add(loc.id);
+        reconciled.push(loc);
+      }
+    }
+
+    reconciled.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    return reconciled;
+  };
+
   // Two-way Sync Back handler from Google Sheets (Single Source of Truth)
   const handleSyncBackData = async (data: {
     vehicles: AmbulanceVehicle[];
@@ -437,6 +496,7 @@ export default function App() {
     damageRecords?: VehicleDamageItem[];
     fuelLogs?: FuelLogRecord[];
     equipmentInspections?: EquipmentInspectionRecord[];
+    exactEquipmentItemIds?: string[];
     equipmentRequisitions?: EquipmentRequisitionRecord[];
   }) => {
     if (data.vehicles) {
@@ -495,13 +555,11 @@ export default function App() {
     }
     if (data.equipmentInspections) {
       const currentLocalEq = getStoredEquipmentInspections();
-      const localEqMap = new Map(currentLocalEq.map((e) => [e.id, e]));
-      const reconciledEq = data.equipmentInspections.map((pe) => {
-        const local = localEqMap.get(pe.id);
-        return local && local.items && local.items.length > 0
-          ? { ...pe, items: local.items, googleSheetsSyncStatus: 'synced' as const }
-          : pe;
-      });
+      const reconciledEq = reconcileEquipmentInspectionsList(
+        data.equipmentInspections,
+        currentLocalEq,
+        data.exactEquipmentItemIds
+      );
       setEquipmentInspections(reconciledEq);
       saveAllEquipmentInspections(reconciledEq);
     }
@@ -559,6 +617,10 @@ export default function App() {
   const loadDataFromDriveBeforeSheets = async (
     showNotification = false
   ): Promise<{ token: string | null; spreadsheetId: string | null; staffList: UserProfile[] } | null> => {
+    if (isSyncingCloudRef.current && !showNotification) {
+      return null;
+    }
+    isSyncingCloudRef.current = true;
     setIsSyncingGSheets(true);
     let latestStaffList: UserProfile[] = getStoredStaff();
     try {
@@ -632,8 +694,17 @@ export default function App() {
               replaceAllInspections(mergedDriveInspections);
             }
             if (driveData.equipmentInspections) {
-              setEquipmentInspections(driveData.equipmentInspections);
-              saveAllEquipmentInspections(driveData.equipmentInspections);
+              const localEq = getStoredEquipmentInspections();
+              const driveEqIds = new Set(driveData.equipmentInspections.map((e) => e.id));
+              const mergedDriveEq = [...driveData.equipmentInspections];
+              for (const loc of localEq) {
+                if (!driveEqIds.has(loc.id) && loc.googleSheetsSyncStatus !== 'synced') {
+                  mergedDriveEq.unshift(loc);
+                }
+              }
+              mergedDriveEq.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+              setEquipmentInspections(mergedDriveEq);
+              saveAllEquipmentInspections(mergedDriveEq);
             }
             if (driveData.equipmentRequisitions) {
               setEquipmentRequisitions(driveData.equipmentRequisitions);
@@ -775,13 +846,11 @@ export default function App() {
 
             if (pulled.equipmentInspections.length > 0 || (driveLoaded && (activeToken || bridgeActive))) {
               const currentEq = getStoredEquipmentInspections();
-              const localEqMap = new Map(currentEq.map((e) => [e.id, e]));
-              const reconciledEq = pulled.equipmentInspections.map((pe) => {
-                const local = localEqMap.get(pe.id);
-                return local && local.items && local.items.length > 0
-                  ? { ...pe, items: local.items, googleSheetsSyncStatus: 'synced' as const }
-                  : pe;
-              });
+              const reconciledEq = reconcileEquipmentInspectionsList(
+                pulled.equipmentInspections,
+                currentEq,
+                pulled.exactEquipmentItemIds
+              );
               setEquipmentInspections(reconciledEq);
               saveAllEquipmentInspections(reconciledEq);
             }
@@ -870,6 +939,8 @@ export default function App() {
       }
       return null;
     } finally {
+      lastCloudSyncAtRef.current = Date.now();
+      isSyncingCloudRef.current = false;
       setIsSyncingGSheets(false);
     }
   };
@@ -885,6 +956,30 @@ export default function App() {
       loadDataFromDriveBeforeSheets(false);
     }
   }, [googleUser]);
+
+  // ซิงค์ข้อมูลล่าสุดอัตโนมัติเมื่อเปิดหน้า "ตรวจอุปกรณ์ BLS" (ป้องกันข้อมูลบนมือถือ/อุปกรณ์อื่นค้างจากแคชเดิม)
+  useEffect(() => {
+    if (isLoggedIn && currentView === 'equipment') {
+      if (Date.now() - lastCloudSyncAtRef.current > 10000) {
+        loadDataFromDriveBeforeSheets(false);
+      }
+    }
+  }, [isLoggedIn, currentView]);
+
+  // ซิงค์ข้อมูลล่าสุดอัตโนมัติเมื่อสลับกลับมาเปิดหน้าเว็บ (เช่น กลับมาเปิดแท็บเดิมบนมือถือ)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (
+        document.visibilityState === 'visible' &&
+        isLoggedIn &&
+        Date.now() - lastCloudSyncAtRef.current > 15000
+      ) {
+        loadDataFromDriveBeforeSheets(false);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [isLoggedIn]);
 
   // Manual trigger function for Sync-Back from Navbar / Drawer
   const handleTriggerSyncBack = async () => {
@@ -2199,11 +2294,40 @@ export default function App() {
 
       if (canWriteCloud && spreadsheetId) {
         try {
-          await appendEquipmentInspectionToSheet(spreadsheetId, recordToSave, activeToken);
-          recordToSave.googleSheetsSyncStatus = 'synced';
-          const updated = saveEquipmentInspection(recordToSave);
-          setEquipmentInspections(updated);
-          await syncEquipmentInspectionsToSheet(spreadsheetId, updated, activeToken).catch(console.warn);
+          // Pull latest cloud equipment rows first so saving from one device never overwrites records saved on other devices
+          let mergedWithCloud: EquipmentInspectionRecord[] | null = null;
+          try {
+            const remoteEq = await pullEquipmentInspectionsFromSheet(
+              spreadsheetId,
+              activeToken,
+              vehicles
+            );
+            const currentLocal = getStoredEquipmentInspections();
+            const reconciledRemote = reconcileEquipmentInspectionsList(
+              remoteEq.records,
+              currentLocal,
+              remoteEq.exactIds
+            );
+            recordToSave.googleSheetsSyncStatus = 'synced';
+            mergedWithCloud = [
+              recordToSave,
+              ...reconciledRemote.filter((r) => r.id !== recordToSave.id),
+            ].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+          } catch (prePullErr) {
+            console.warn('Pre-save equipment pull warning (falling back to append):', prePullErr);
+          }
+
+          if (mergedWithCloud) {
+            await syncEquipmentInspectionsToSheet(spreadsheetId, mergedWithCloud, activeToken);
+            saveAllEquipmentInspections(mergedWithCloud);
+            setEquipmentInspections(mergedWithCloud);
+          } else {
+            await appendEquipmentInspectionToSheet(spreadsheetId, recordToSave, activeToken);
+            recordToSave.googleSheetsSyncStatus = 'synced';
+            const updated = saveEquipmentInspection(recordToSave);
+            setEquipmentInspections(updated);
+          }
+
           await saveCurrentDatabaseSnapshotToDrive(activeToken);
         } catch (sheetErr: any) {
           const formatted = formatGoogleApiError(sheetErr?.message || 'บันทึกลงตารางไม่สำเร็จ', 'Google Sheets API');
@@ -2267,10 +2391,29 @@ export default function App() {
     setEquipmentInspections(updated);
 
     const { token, spreadsheetId, bridgeActive } = await ensureTokenAndSheet(false);
-    if ((token || bridgeActive) && spreadsheetId) {
+    const activeToken = token || '';
+    if ((activeToken || bridgeActive) && spreadsheetId) {
       try {
-        await syncEquipmentInspectionsToSheet(spreadsheetId, updated, token || '');
-        await saveCurrentDatabaseSnapshotToDrive(token || '');
+        let finalList = updated;
+        try {
+          const remoteEq = await pullEquipmentInspectionsFromSheet(
+            spreadsheetId,
+            activeToken,
+            vehicles
+          );
+          const reconciledRemote = reconcileEquipmentInspectionsList(
+            remoteEq.records,
+            updated,
+            remoteEq.exactIds
+          );
+          finalList = reconciledRemote.filter((r) => r.id !== id);
+          saveAllEquipmentInspections(finalList);
+          setEquipmentInspections(finalList);
+        } catch (prePullErr) {
+          console.warn('Pre-delete equipment pull warning:', prePullErr);
+        }
+        await syncEquipmentInspectionsToSheet(spreadsheetId, finalList, activeToken);
+        await saveCurrentDatabaseSnapshotToDrive(activeToken);
       } catch (err: any) {
         console.warn('Delete equipment inspection sync warning:', err?.message || err);
       }
@@ -2612,6 +2755,8 @@ export default function App() {
             onSaveRecord={handleSaveEquipmentInspection}
             onDeleteRecord={handleDeleteEquipmentInspection}
             isSubmitting={isSubmittingEquipment}
+            onRefreshCloud={handleTriggerSyncBack}
+            isSyncing={isSyncingGSheets}
           />
         )}
 

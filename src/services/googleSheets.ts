@@ -7,10 +7,17 @@ import {
   DamageSeverity,
   FuelLogRecord,
   EquipmentInspectionRecord,
+  EquipmentCheckItem,
+  EquipmentConditionStatus,
   EquipmentRequisitionRecord,
 } from '../types';
 import { createFreshChecklist } from '../data/defaultChecklist';
-import { ORGANIZATION_NAME, createFreshEquipmentChecklist, getDefaultThaiDateParts } from '../data/equipmentChecklist';
+import {
+  ORGANIZATION_NAME,
+  EQUIPMENT_TEMPLATE_ITEMS,
+  createFreshEquipmentChecklist,
+  getDefaultThaiDateParts,
+} from '../data/equipmentChecklist';
 import { generateSvgDamagePlaceholder, toDisplayableDriveImageUrl } from './storage';
 import {
   callAppsScriptBridge,
@@ -162,11 +169,12 @@ export const EQUIPMENT_HEADERS = [
   'รหัสรถ/ทะเบียน',
   'ผู้ตรวจเช็ค',
   'สถานะความพร้อมรวม',
-  'รายการบังคับผ่าน (จาก 30)',
+  'รายการบังคับผ่าน (จาก 31)',
   'รายการไม่ครบ/ชำรุด',
   'รายละเอียดที่ขาด/ชำรุด/หมายเหตุ',
   'บันทึกเวลาในระบบ',
   'รหัสอ้างอิง (ID)',
+  'ข้อมูลรายการอุปกรณ์ (JSON)',
 ];
 
 export const REQUISITION_HEADERS = [
@@ -967,6 +975,7 @@ export async function pullAllDataFromGoogleSheets(
   damageRecords: VehicleDamageItem[];
   fuelLogs: FuelLogRecord[];
   equipmentInspections: EquipmentInspectionRecord[];
+  exactEquipmentItemIds: string[];
   equipmentRequisitions: EquipmentRequisitionRecord[];
   pulledAt: string;
 }> {
@@ -1346,62 +1355,10 @@ export async function pullAllDataFromGoogleSheets(
     }
   }
 
-  // 6. Pull Equipment Inspections
-  const eqRows = await fetchTabRows(EQUIPMENT_SHEET_TITLE, 'A2:K500');
-  const equipmentInspections: EquipmentInspectionRecord[] = [];
-  if (eqRows.length > 0) {
-    const rows: string[][] = eqRows;
-    const defaultDate = getDefaultThaiDateParts();
-    for (let idx = 0; idx < rows.length; idx++) {
-      const r = rows[idx];
-      if (r && r[0] && r[2]) {
-        const teamLabel = r[2].trim();
-        const team = teamLabel.includes('2') ? 'team_2' : 'team_1';
-        const statusText = (r[5] || '').trim();
-        const overallStatus: EquipmentInspectionRecord['overallStatus'] =
-          statusText.includes('ชำรุด') || statusText.includes('เร่งด่วน')
-            ? 'critical'
-            : statusText.includes('ไม่ครบ')
-            ? 'incomplete'
-            : 'ready';
-        const passMatch = String(r[6] || '').match(/(\d+)\s*\/\s*(\d+)/);
-        const passedCount = passMatch ? Number(passMatch[1]) : 30;
-        const totalCount = passMatch ? Number(passMatch[2]) : 30;
-        const vehParts = (r[3] || '').split('/').map((s) => s.trim());
-        const vehicleCode = vehParts[0] && vehParts[0] !== '-' ? vehParts[0] : undefined;
-        const plateNumber = vehParts[1] || undefined;
-        const matchedVeh = vehicleCode
-          ? vehicles.find((v) => v.code === vehicleCode || (plateNumber && v.plateNumber === plateNumber))
-          : undefined;
-        const dateFormatted = r[0].trim();
-        const dateMatch = dateFormatted.match(/(\d+)\s+([^\s]+)\s+(\d+)/);
-
-        equipmentInspections.push({
-          id: (r[10] || '').trim() || `eq-insp-sheet-${idx + 1}`,
-          organizationName: (r[1] || '').trim() || ORGANIZATION_NAME,
-          team,
-          teamLabel,
-          inspectDay: dateMatch ? dateMatch[1] : defaultDate.day,
-          inspectMonth: dateMatch ? dateMatch[2] : defaultDate.month,
-          inspectYear: dateMatch ? dateMatch[3] : defaultDate.year,
-          inspectDateFormatted: dateFormatted,
-          vehicleId: matchedVeh?.id,
-          vehicleCode,
-          plateNumber,
-          inspectorName: (r[4] || '').trim() || 'เจ้าหน้าที่',
-          inspectorRole: 'staff',
-          items: createFreshEquipmentChecklist(overallStatus === 'ready'),
-          requiredPassedCount: passedCount,
-          requiredTotalCount: totalCount,
-          overallStatus,
-          summaryNotes: (r[8] || '').trim() === '-' ? '' : (r[8] || '').trim(),
-          uploadTimestamp: (r[9] || '').trim() || pulledAt,
-          createdAt: Date.now() - idx * 1000,
-          googleSheetsSyncStatus: 'synced',
-        });
-      }
-    }
-  }
+  // 6. Pull Equipment Inspections (Columns A:L including serialized item-level JSON in Col L)
+  const eqRows = await fetchTabRows(EQUIPMENT_SHEET_TITLE, 'A2:L500');
+  const { records: equipmentInspections, exactIds: exactEquipmentItemIds } =
+    parseEquipmentSheetRows(eqRows, vehicles, pulledAt);
 
   // 7. Pull Equipment Requisitions
   const reqRows = await fetchTabRows(REQUISITION_SHEET_TITLE, 'A2:N500');
@@ -1482,6 +1439,7 @@ export async function pullAllDataFromGoogleSheets(
     damageRecords,
     fuelLogs,
     equipmentInspections,
+    exactEquipmentItemIds,
     equipmentRequisitions,
     pulledAt,
   };
@@ -1724,10 +1682,308 @@ export async function syncFuelLogsToSheet(
   }
 }
 
+type CompactEquipmentTuple = [string, number, 'r' | 'i' | 'd', string];
+
+interface SerializedEquipmentSheetPayload {
+  v: 1;
+  sn: string;
+  items: CompactEquipmentTuple[];
+}
+
+function serializeEquipmentItemsForSheet(record: EquipmentInspectionRecord): string {
+  const payload: SerializedEquipmentSheetPayload = {
+    v: 1,
+    sn: record.summaryNotes || '',
+    items: (record.items || []).map((item) => [
+      item.id,
+      Number.isFinite(item.availableQty) ? Math.max(0, Math.floor(item.availableQty)) : 0,
+      item.conditionStatus === 'damaged'
+        ? 'd'
+        : item.conditionStatus === 'incomplete'
+        ? 'i'
+        : 'r',
+      item.notes || '',
+    ]),
+  };
+  return JSON.stringify(payload);
+}
+
+function computeEquipmentMetricsFromItems(items: EquipmentCheckItem[]): {
+  requiredPassedCount: number;
+  requiredTotalCount: number;
+  overallStatus: EquipmentInspectionRecord['overallStatus'];
+} {
+  const requiredItems = items.filter((i) => i.minCount !== null);
+  const requiredPassedCount = requiredItems.filter(
+    (i) => i.conditionStatus !== 'damaged' && i.availableQty >= (i.minCount || 0)
+  ).length;
+  const damagedCount = items.filter((i) => i.conditionStatus === 'damaged').length;
+  const incompleteRequiredCount = requiredItems.length - requiredPassedCount;
+  const overallStatus: EquipmentInspectionRecord['overallStatus'] =
+    damagedCount > 0 ? 'critical' : incompleteRequiredCount > 0 ? 'incomplete' : 'ready';
+  return {
+    requiredPassedCount,
+    requiredTotalCount: requiredItems.length,
+    overallStatus,
+  };
+}
+
+function parseSerializedEquipmentItems(
+  rawJson: string
+): { items: EquipmentCheckItem[]; summaryNotes: string } | null {
+  const trimmed = (rawJson || '').trim().replace(/^'/, '');
+  if (!trimmed || !trimmed.startsWith('{')) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as SerializedEquipmentSheetPayload;
+    if (!parsed || !Array.isArray(parsed.items) || parsed.items.length === 0) return null;
+    const tupleMap = new Map<string, CompactEquipmentTuple>();
+    for (const t of parsed.items) {
+      if (Array.isArray(t) && typeof t[0] === 'string') {
+        tupleMap.set(t[0], t);
+      }
+    }
+    const hydrated: EquipmentCheckItem[] = EQUIPMENT_TEMPLATE_ITEMS.map((tpl) => {
+      const tuple = tupleMap.get(tpl.id);
+      if (!tuple) {
+        const qty = tpl.minCount !== null ? 0 : 0;
+        return {
+          ...tpl,
+          availableQty: qty,
+          conditionStatus: tpl.minCount === null ? 'ready' : 'incomplete',
+          notes: '',
+        };
+      }
+      const qty = Math.max(0, Math.floor(Number(tuple[1]) || 0));
+      const statusCode = tuple[2];
+      const conditionStatus: EquipmentConditionStatus =
+        statusCode === 'd' ? 'damaged' : statusCode === 'i' ? 'incomplete' : 'ready';
+      return {
+        ...tpl,
+        availableQty: qty,
+        conditionStatus,
+        notes: typeof tuple[3] === 'string' ? tuple[3] : '',
+      };
+    });
+    return {
+      items: hydrated,
+      summaryNotes: typeof parsed.sn === 'string' ? parsed.sn : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function reconstructLegacyEquipmentItems(
+  rawNotesCol: string,
+  passedCount: number,
+  overallStatus: EquipmentInspectionRecord['overallStatus']
+): { items: EquipmentCheckItem[]; summaryNotes: string } {
+  const cleanedRaw = (rawNotesCol || '').trim();
+  const baseItems = createFreshEquipmentChecklist(overallStatus === 'ready' || passedCount > 0);
+  if (!cleanedRaw || cleanedRaw === '-' || cleanedRaw === 'ครบถ้วนสมบูรณ์ทุกรายการ') {
+    return { items: baseItems, summaryNotes: '' };
+  }
+
+  const parts = cleanedRaw.split(' --- ');
+  const firstPart = parts[0] || '';
+  const trailingSummary = parts.slice(1).join(' --- ').trim();
+
+  const segments = firstPart
+    .split(' | ')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  let matchedAnyIssue = false;
+  for (const seg of segments) {
+    const matchedItem = baseItems.find((item) => {
+      const prefix = `${item.itemCode} ${item.name}`;
+      return seg.startsWith(prefix);
+    });
+    if (!matchedItem) continue;
+    matchedAnyIssue = true;
+
+    const prefix = `${matchedItem.itemCode} ${matchedItem.name}`;
+    const rest = seg.slice(prefix.length).trim();
+    const parenMatch = rest.match(/^\((.*)\)$/);
+    const inner = parenMatch ? parenMatch[1].trim() : rest;
+
+    if (inner.startsWith('ชำรุด')) {
+      matchedItem.conditionStatus = 'damaged';
+      const noteIdx = inner.indexOf(':');
+      if (noteIdx >= 0) {
+        matchedItem.notes = inner.slice(noteIdx + 1).trim();
+      }
+    } else {
+      const qtyMatch = inner.match(/^มี\s*(\d+)/);
+      if (qtyMatch) {
+        matchedItem.availableQty = Math.max(0, Number(qtyMatch[1]));
+      }
+      matchedItem.conditionStatus =
+        matchedItem.minCount !== null && matchedItem.availableQty < matchedItem.minCount
+          ? 'incomplete'
+          : 'ready';
+      const noteIdx = inner.indexOf(':');
+      if (noteIdx >= 0) {
+        matchedItem.notes = inner.slice(noteIdx + 1).trim();
+      }
+    }
+  }
+
+  const summaryNotes = matchedAnyIssue ? trailingSummary : cleanedRaw;
+  return { items: baseItems, summaryNotes };
+}
+
+function parseEquipmentCreatedAt(id: string, fallbackIdx: number): number {
+  const idMatch = id.match(/eq-insp-(\d{10,})/);
+  if (idMatch) {
+    const parsedTs = Number(idMatch[1]);
+    if (Number.isFinite(parsedTs) && parsedTs > 1577836800000) {
+      return parsedTs;
+    }
+  }
+  return Date.now() - fallbackIdx * 1000;
+}
+
+export function parseEquipmentSheetRows(
+  eqRows: string[][],
+  vehicles: AmbulanceVehicle[],
+  pulledAt = new Date().toLocaleString('th-TH')
+): { records: EquipmentInspectionRecord[]; exactIds: string[] } {
+  const equipmentInspections: EquipmentInspectionRecord[] = [];
+  const exactIds: string[] = [];
+  if (!Array.isArray(eqRows) || eqRows.length === 0) {
+    return { records: equipmentInspections, exactIds };
+  }
+
+  const defaultDate = getDefaultThaiDateParts();
+  const defaultRequiredTotal = EQUIPMENT_TEMPLATE_ITEMS.filter((i) => i.minCount !== null).length;
+
+  for (let idx = 0; idx < eqRows.length; idx++) {
+    const r = eqRows[idx];
+    if (r && r[0] && r[2]) {
+      const id = (r[10] || '').trim() || `eq-insp-sheet-${idx + 1}`;
+      const teamLabel = r[2].trim();
+      const team = teamLabel.includes('2') ? 'team_2' : 'team_1';
+      const statusText = (r[5] || '').trim();
+      const fallbackStatus: EquipmentInspectionRecord['overallStatus'] =
+        statusText.includes('ชำรุด') || statusText.includes('เร่งด่วน')
+          ? 'critical'
+          : statusText.includes('ไม่ครบ')
+          ? 'incomplete'
+          : 'ready';
+
+      const passCol = String(r[6] || '').trim().replace(/^'/, '');
+      const passMatch = passCol.match(/^(\d+)\s*\/\s*(\d+)$/);
+      const fallbackPassed = passMatch ? Number(passMatch[1]) : defaultRequiredTotal;
+      const fallbackTotal = passMatch ? Number(passMatch[2]) : defaultRequiredTotal;
+
+      const vehParts = (r[3] || '').split('/').map((s) => s.trim());
+      const vehicleCode = vehParts[0] && vehParts[0] !== '-' ? vehParts[0] : undefined;
+      const plateNumber = vehParts[1] || undefined;
+      const matchedVeh = vehicleCode
+        ? vehicles.find((v) => v.code === vehicleCode || (plateNumber && v.plateNumber === plateNumber))
+        : undefined;
+      const dateFormatted = r[0].trim();
+      const dateMatch = dateFormatted.match(/(\d+)\s+([^\s]+)\s+(\d+)/);
+
+      const exactParsed = parseSerializedEquipmentItems(r[11] || '');
+      let items: EquipmentCheckItem[];
+      let summaryNotes: string;
+      let requiredPassedCount = fallbackPassed;
+      let requiredTotalCount = fallbackTotal;
+      let overallStatus = fallbackStatus;
+
+      if (exactParsed) {
+        items = exactParsed.items;
+        summaryNotes = exactParsed.summaryNotes;
+        const computed = computeEquipmentMetricsFromItems(items);
+        requiredPassedCount = computed.requiredPassedCount;
+        requiredTotalCount = computed.requiredTotalCount;
+        overallStatus = computed.overallStatus;
+        exactIds.push(id);
+      } else {
+        const legacyParsed = reconstructLegacyEquipmentItems(r[8] || '', fallbackPassed, fallbackStatus);
+        items = legacyParsed.items;
+        summaryNotes = legacyParsed.summaryNotes;
+      }
+
+      equipmentInspections.push({
+        id,
+        organizationName: (r[1] || '').trim() || ORGANIZATION_NAME,
+        team,
+        teamLabel,
+        inspectDay: dateMatch ? dateMatch[1] : defaultDate.day,
+        inspectMonth: dateMatch ? dateMatch[2] : defaultDate.month,
+        inspectYear: dateMatch ? dateMatch[3] : defaultDate.year,
+        inspectDateFormatted: dateFormatted,
+        vehicleId: matchedVeh?.id,
+        vehicleCode,
+        plateNumber,
+        inspectorName: (r[4] || '').trim() || 'เจ้าหน้าที่',
+        inspectorRole: 'staff',
+        items,
+        requiredPassedCount,
+        requiredTotalCount,
+        overallStatus,
+        summaryNotes,
+        uploadTimestamp: (r[9] || '').trim() || pulledAt,
+        createdAt: parseEquipmentCreatedAt(id, idx),
+        googleSheetsSyncStatus: 'synced',
+      });
+    }
+  }
+
+  equipmentInspections.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return { records: equipmentInspections, exactIds };
+}
+
+/**
+ * Lightweight pull of ONLY Tab 7 (ตรวจความพร้อมอุปกรณ์_BLS) so multi-device saves
+ * can safely merge with latest cloud records before syncing without overwriting other devices.
+ */
+export async function pullEquipmentInspectionsFromSheet(
+  spreadsheetId: string,
+  accessToken = '',
+  vehicles: AmbulanceVehicle[] = []
+): Promise<{ records: EquipmentInspectionRecord[]; exactIds: string[] }> {
+  let eqRows: string[][] = [];
+  if (accessToken) {
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+      EQUIPMENT_SHEET_TITLE
+    )}!A2:L500`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) {
+      throw new Error(`ไม่สามารถดึงข้อมูลอุปกรณ์จาก Google Sheets ได้ (${res.status})`);
+    }
+    const data = await res.json();
+    eqRows = Array.isArray(data.values) ? data.values : [];
+  } else if (getActiveAppsScriptUrl()) {
+    const batchRes = await callAppsScriptBridge<{ ok: boolean; tabs: Record<string, string[][]> }>(
+      'readAllTabs',
+      {
+        spreadsheetId,
+        sheetTitles: [EQUIPMENT_SHEET_TITLE],
+      }
+    );
+    eqRows = Array.isArray(batchRes?.tabs?.[EQUIPMENT_SHEET_TITLE])
+      ? batchRes.tabs[EQUIPMENT_SHEET_TITLE]
+      : [];
+  } else {
+    eqRows = await readSheetValuesWithoutLogin(spreadsheetId, EQUIPMENT_SHEET_TITLE, 'A2:L500');
+  }
+
+  return parseEquipmentSheetRows(eqRows, vehicles);
+}
+
 /**
  * Format equipment readiness inspection record for sheet (Tab 7: ตรวจความพร้อมอุปกรณ์_BLS)
  */
-export function formatEquipmentRecordForSheet(record: EquipmentInspectionRecord): (string | number)[] {
+export function formatEquipmentRecordForSheet(
+  record: EquipmentInspectionRecord,
+  escapeTextForBridge = false
+): (string | number)[] {
   const statusLabel =
     record.overallStatus === 'ready'
       ? 'พร้อมปฏิบัติการ (ครบเกณฑ์)'
@@ -1757,6 +2013,8 @@ export function formatEquipmentRecordForSheet(record: EquipmentInspectionRecord)
     ? `${record.vehicleCode}${record.plateNumber ? ` / ${record.plateNumber}` : ''}`
     : '-';
 
+  const passRatioText = `${record.requiredPassedCount}/${record.requiredTotalCount}`;
+
   return [
     record.inspectDateFormatted,
     record.organizationName,
@@ -1764,11 +2022,12 @@ export function formatEquipmentRecordForSheet(record: EquipmentInspectionRecord)
     vehLabel,
     record.inspectorName,
     statusLabel,
-    `${record.requiredPassedCount}/${record.requiredTotalCount}`,
+    escapeTextForBridge ? `'${passRatioText}` : passRatioText,
     issues.length,
     notesCombined || 'ครบถ้วนสมบูรณ์ทุกรายการ',
     record.uploadTimestamp,
     record.id,
+    serializeEquipmentItemsForSheet(record),
   ];
 }
 
@@ -1777,22 +2036,22 @@ export async function appendEquipmentInspectionToSheet(
   record: EquipmentInspectionRecord,
   accessToken: string
 ): Promise<{ success: boolean }> {
-  const rowValues = formatEquipmentRecordForSheet(record);
   if (!accessToken && getActiveAppsScriptUrl()) {
     await callAppsScriptBridge('appendRow', {
       spreadsheetId,
       sheetTitle: EQUIPMENT_SHEET_TITLE,
       headers: EQUIPMENT_HEADERS,
-      row: rowValues,
+      row: formatEquipmentRecordForSheet(record, true),
     });
     return { success: true };
   }
 
   await ensureAllSpreadsheetTabs(spreadsheetId, accessToken);
 
+  const rowValues = formatEquipmentRecordForSheet(record, false);
   const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
     EQUIPMENT_SHEET_TITLE
-  )}!A:K:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+  )}!A:L:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
 
   const response = await fetch(appendUrl, {
     method: 'POST',
@@ -1821,7 +2080,7 @@ export async function syncEquipmentInspectionsToSheet(
       spreadsheetId,
       sheetTitle: EQUIPMENT_SHEET_TITLE,
       headers: EQUIPMENT_HEADERS,
-      rows: records.map(formatEquipmentRecordForSheet),
+      rows: records.map((r) => formatEquipmentRecordForSheet(r, true)),
     });
     return;
   }
@@ -1830,7 +2089,7 @@ export async function syncEquipmentInspectionsToSheet(
 
   const clearUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
     EQUIPMENT_SHEET_TITLE
-  )}!A2:K500:clear`;
+  )}!A2:L500:clear`;
 
   await fetch(clearUrl, {
     method: 'POST',
@@ -1840,12 +2099,10 @@ export async function syncEquipmentInspectionsToSheet(
     },
   });
 
-  if (records.length === 0) return;
-
-  const rows = records.map(formatEquipmentRecordForSheet);
+  const rows = [EQUIPMENT_HEADERS, ...records.map((r) => formatEquipmentRecordForSheet(r, false))];
   const putUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
     EQUIPMENT_SHEET_TITLE
-  )}!A2:K${rows.length + 1}?valueInputOption=USER_ENTERED`;
+  )}!A1:L${rows.length}?valueInputOption=RAW`;
 
   const response = await fetch(putUrl, {
     method: 'PUT',

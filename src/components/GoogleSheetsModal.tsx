@@ -102,6 +102,7 @@ interface GoogleSheetsModalProps {
     damageRecords?: VehicleDamageItem[];
     fuelLogs?: FuelLogRecord[];
     equipmentInspections?: EquipmentInspectionRecord[];
+    exactEquipmentItemIds?: string[];
     equipmentRequisitions?: EquipmentRequisitionRecord[];
   }) => void;
 }
